@@ -10,7 +10,116 @@ import ServiceManagement
 
 // MARK: - 常量与路径
 
-private let kSplashBin = "/opt/homebrew/bin/splash"
+// MARK: - 引擎二进制探测（不写死位置）
+
+// ==== ENGINE-PATH-RESOLVE-BEGIN ====
+/// 探测可执行文件在磁盘上的真实位置，**不假设任何包管理器或固定前缀**。
+///
+/// 为什么不能写死：brew 可能是 /opt/homebrew（Apple Silicon）或 /usr/local（Intel），
+/// 也可能是自定义 prefix（~/homebrew 之类）；mlx-serve 既可能 brew 装，也可能是官方
+/// 脚本自解压到 ~/.local；Splash 也可能从源码或 release 包直接跑。
+///
+/// 还有个隐蔽陷阱：本 App 作为登录项启动时，进程里的 PATH 通常只有
+/// `/usr/bin:/bin:/usr/sbin`，**不含 /opt/homebrew/bin**，
+/// 所以光扫 PATH 不够，必须额外补一组常见前缀，否则会「明明装了却显示未安装」。
+///
+/// 查找顺序：环境变量显式指定 → PATH 逐目录扫描 → 常见包管理器前缀（含 brew --prefix 实测值）→ 调用方补充目录。
+/// 找不到返回 nil，由调用方决定降级行为。
+
+/// 去重后的候选目录集合（惰性求值，整个进程生命周期只算一次）。
+private let kSearchDirs: [String] = {
+    var dirs: [String] = []
+    func add(_ d: String) { if !d.isEmpty && !dirs.contains(d) { dirs.append(d) } }
+
+    // 1) App 自身环境的 PATH（交互启动时带 shell 的完整 PATH，是最权威的信号）
+    for p in (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":") { add(String(p)) }
+    // 2) 常见包管理器前缀兜底（登录项场景的 PATH 很短，必须补）
+    for p in ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin",
+              "/opt/pkg/bin", "/sw/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"] { add(p) }
+    // 3) 自定义 Homebrew prefix：直接问一次 brew，拿它自己承认的位置
+    if let hp = ProcessInfo.processInfo.environment["HOMEBREW_PREFIX"] { add(hp + "/bin") }
+    for brew in ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"] where FileManager.default.isExecutableFile(atPath: brew) {
+        let r = run(brew, ["--prefix"])
+        if r.status == 0 {
+            let p = r.out.trimmingCharacters(in: .whitespacesAndNewlines)
+            if FileManager.default.fileExists(atPath: p + "/bin") { add(p + "/bin") }
+        }
+        break
+    }
+    return dirs
+}()
+
+/// 路径是否指向「可执行的**普通文件**」。
+/// 加固点一：目录带执行位是合法的，若只用 isExecutableFile 判断，
+/// PATH 里一个同名的目录就会把真正的引擎顶掉，所以必须排除目录。
+/// 加固点二：软链还要核实它指向的本体确实存在且可执行（半卸载留下的悬空软链会骗过 existance 检查）。
+private func isRegularExecutable(_ path: String) -> Bool {
+    let fm = FileManager.default
+    var isDir: ObjCBool = false
+    guard fm.fileExists(atPath: path, isDirectory: &isDir), !isDir.boolValue else { return false }
+    guard fm.isExecutableFile(atPath: path) else { return false }
+    let real = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+    return fm.fileExists(atPath: real) && fm.isExecutableFile(atPath: real)
+}
+
+/// 在给定目录里收集**全部**同名可执行候选（按软链解析后的真实路径去重）。
+private func candidateBinaries(_ name: String, in dirs: [String]) -> [String] {
+    var seen = Set<String>()
+    var out: [String] = []
+    for d in dirs {
+        let p = (d as NSString).appendingPathComponent(name)
+        guard isRegularExecutable(p) else { continue }
+        let real = URL(fileURLWithPath: p).resolvingSymlinksInPath().path
+        if seen.insert(real).inserted { out.append(p) }
+    }
+    return out
+}
+
+/// 探测引擎二进制：**不假设任何安装位置**，并且优先挑真正跑得起来的那个。
+///
+/// 顺序：环境变量显式指定 → 逐目录扫描收集全部候选 → 逐个跑 `--version` 验证（最多 3 个）。
+/// 加固点三：PATH 里可能躺着同名残骸（半卸载的软链、别的项目放的同名脚本），
+/// 只取第一个命中会挑到不能用的那个，所以多验证一步。
+/// 验证全部失败时退回第一个命中，仍由上层按「未安装」处理，不改变既有行为。
+///
+/// - Parameters:
+///   - name: 可执行文件名，如 `mlx-serve`
+///   - envOverride: 允许用户强制指定的环境变量名，如 `MLX_SERVE_BIN`（可给绝对路径或裸命令名）
+///   - extraDirs: 调用方补充的目录（如 mlx-serve 的自解压位置）
+private func resolveEngineBinary(_ name: String, envOverride: String, extraDirs: [String] = []) -> String? {
+    if let v = ProcessInfo.processInfo.environment[envOverride], !v.isEmpty {
+        if v.contains("/") {
+            if isRegularExecutable(v) { return v }
+        } else if let hit = candidateBinaries(v, in: kSearchDirs).first {
+            return hit
+        }
+    }
+    var hits = candidateBinaries(name, in: kSearchDirs)
+    hits.append(contentsOf: candidateBinaries(name, in: extraDirs))
+    guard !hits.isEmpty else { return nil }
+    for h in hits.prefix(3) where run(h, ["--version"]).status == 0 { return h }
+    return hits.first
+}
+
+/// Splash 的位置：**任意位置**探测。结果按进程缓存，避免每次访问都重复 spawn 校验。
+/// 实在找不到时仍退回旧常量，让上层按「未安装」处理，不改变既有行为。
+private let kSplashBinResolved: String? = resolveEngineBinary("splash", envOverride: "SPLASH_BIN")
+private var kSplashBin: String { kSplashBinResolved ?? "/opt/homebrew/bin/splash" }
+
+/// mlx-serve 的位置：**任意位置**探测（brew 任意 prefix / 官方脚本自解压 / 用户自定义目录）。
+/// extraDirs 保留自解压的历史位置，结果按进程缓存。
+/// 找不到时退回一个不存在的路径，让上层按「未安装」处理，不改变既有行为。
+private let kMlxBinResolved: String? = resolveEngineBinary("mlx-serve", envOverride: "MLX_SERVE_BIN",
+    extraDirs: [homeURL().path + "/.local/lib/mlx-serve", homeURL().path + "/.local/bin"])
+private var kMlxBin: String { kMlxBinResolved ?? (homeURL().path + "/.local/lib/mlx-serve/mlx-serve") }
+
+/// 引擎进程的 PATH：把它自己所在目录放最前，再接全部探测目录。
+/// 这样无论引擎装在哪个 prefix，它自己拉起的子进程都能找到同伴（splash 的 python 尤其依赖这个）。
+private var engineLaunchPath: String {
+    let binDir = (engineBin as NSString).deletingLastPathComponent
+    return ([binDir] + kSearchDirs).joined(separator: ":")
+}
+// ==== ENGINE-PATH-RESOLVE-END ====
 
 /// 当前选中的推理引擎。和 activePort 一样是运行期状态：
 /// App 启动和 CLI 入口统一先 syncEngine(cfg.engine)，让下面所有静态方法
@@ -57,21 +166,6 @@ enum Engine: String, Codable, CaseIterable {
 
 var activeEngine: Engine = .splash
 
-/// mlx-serve 是自解压安装的，没有 brew 的固定路径。
-/// 优先取真实二进制（软链也能跑，但直接指真身可避开 @executable_path 的任何歧义），
-/// 退回 ~/.local/bin 的软链，再退回 PATH 查找。
-private var kMlxBin: String {
-    let fm = FileManager.default
-    let home = homeURL().path
-    let candidates = [
-        home + "/.local/lib/mlx-serve/mlx-serve",
-        home + "/.local/bin/mlx-serve",
-        "/opt/homebrew/bin/mlx-serve",
-        "/usr/local/bin/mlx-serve",
-    ]
-    for c in candidates where fm.isExecutableFile(atPath: c) { return c }
-    return candidates[0]
-}
 
 /// 当前引擎的可执行文件
 var engineBin: String {
@@ -866,7 +960,16 @@ enum Service {
         FileManager.default.createFile(atPath: logOutPath, contents: nil)
         FileManager.default.createFile(atPath: logErrPath, contents: nil)
 
-        var env = ["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        // 加固点四：启动前先确认引擎真的可执行，给出人话报错，
+        // 而不是让 posix_spawn 失败后抛一句看不懂的 errno。
+        guard FileManager.default.isExecutableFile(atPath: engineBin) else {
+            let hint = activeEngine == .mlx ? "MLX_SERVE_BIN" : "SPLASH_BIN"
+            return "engine not found: 未找到 \(activeEngine.displayName) 的可执行文件"
+                 + "（已扫 PATH、常见包管理器前缀与 \(hint)，均无可用二进制）"
+        }
+        // PATH 由探测结果动态拼出（引擎目录在最前），不再写死 /opt/homebrew，
+        // 否则装在其它 prefix 的引擎，其子进程会找不到配套命令。
+        var env = ["PATH": engineLaunchPath,
                    "HOME": homeURL().path]
         // Splash 的 `--api-key` 默认值就是 SPLASH_API_KEY 环境变量，所以用环境变量注入；
         // mlx-serve 没有对应环境变量，走 --api-key 标志（已拼进 serveArguments）。
