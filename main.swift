@@ -1534,75 +1534,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             settingsItems.append(disabled("Could not query the engine — options left enabled"))
             settingsItems.append(.separator())
         }
-        if activeEngine == .mlx {
-            settingsItems += mlxSettingsItems()
-        } else {
-        settingsItems += [
-            gatedSubmenu("Max memory  --max-memory", tag: kTagMaxMemory, items: choiceItems(
-                current: cfg.maxMemory,
-                options: [("auto", "auto (≈107 GB, M5 Max limit)"),
-                          ("24G", "24G"), ("32G", "32G"), ("48G", "48G"),
-                          ("64G", "64G"), ("96G", "96G")],
-                customLabel: "Custom… (e.g. 28G)", tag: kTagMaxMemory)),
-            gatedSubmenu("Context  --max-context", tag: kTagMaxContext, items: choiceItems(
-                current: cfg.maxContext,
-                options: [("auto", "auto (262144 = 256K)"),
-                          ("32K", "32K"), ("64K", "64K"), ("128K", "128K"), ("256K", "256K")],
-                customLabel: "Custom… (e.g. 100K)", tag: kTagMaxContext)),
-            gatedSubmenu("Port  --port", tag: kTagPort, items: choiceItems(
-                current: cfg.port,
-                options: [("8000", "8000 (Splash default)"),
-                          ("8080", "8080"), ("8123", "8123"), ("9000", "9000")],
-                customLabel: "Custom… (e.g. 7000)", tag: kTagPort)),
-            gatedSubmenu("Max request size  --max-request-size", tag: kTagMaxRequestSize, items: choiceItems(
-                current: cfg.maxRequestSize,
-                options: [("", "128M (Splash 1.0.1 default — flag omitted)"),
-                          ("64M", "64M"), ("256M", "256M"), ("512M", "512M"), ("1G", "1G")],
-                customLabel: "Custom… (e.g. 32M)", tag: kTagMaxRequestSize)),
-            gatedSubmenu("Max image pixels  --max-image-pixels", tag: kTagMaxImagePixels, items: choiceItems(
-                current: cfg.maxImagePixels,
-                options: [("", "Engine default (4194304)"),
-                          ("1048576", "1M  = 1048576"), ("2097152", "2M  = 2097152"),
-                          ("4194304", "4M  = 4194304"), ("8388608", "8M  = 8388608")],
-                customLabel: "Custom… (pixel count)", tag: kTagMaxImagePixels)),
-            // 这一项不是 CLI 参数：Splash-MLX 通过环境变量注入（--api-key 的 default 就是它）
-            submenuItem("API Key  $SPLASH_API_KEY", items: apiKeyItems()),
-            gatedSubmenu("Reasoning effort  --default-reasoning-effort", tag: kTagReasoningEffort, items: choiceItems(
-                current: cfg.reasoningEffort,
-                options: [("", "Engine default" + templateEffortDefaultHint()),
-                          ("none", "none — no thinking (fastest)"),
-                          ("minimal", "minimal"), ("low", "low"),
-                          ("medium", "medium"), ("high", "high")],
-                customLabel: "Custom… (xhigh / max)", tag: kTagReasoningEffort)),
-            // ── Splash 1.1.0 新增四项。1.0.2 上会整组置灰并说明"Engine 1.0.2 has no --x"
-            gatedSubmenu("KV cache format  --kv-format", tag: kTagKvFormat, items: choiceItems(
-                current: cfg.kvFormat,
-                options: [("", "int8 (engine default)"),
-                          ("bf16", "bf16 — more memory, no quant loss")],
-                customLabel: "", tag: kTagKvFormat, custom: false)),
-            gatedSubmenu("Draft model  --draft-model", tag: kTagDraftModel, items: choiceItems(
-                current: cfg.draftModel,
-                options: [("", "Auto (engine-picked DFlash2)")],
-                customLabel: "Custom… (repo or local dir)", tag: kTagDraftModel)),
-            gatedSubmenu("Model revision  --revision", tag: kTagRevision, items: choiceItems(
-                current: cfg.revision,
-                options: [("", "Repository default")],
-                customLabel: "Custom… (branch / tag / commit)", tag: kTagRevision)),
-            gatedSubmenu("Language only  --language-only", tag: kTagLanguageOnly, items: boolItems(
-                on: !cfg.languageOnly,
-                onLabel: "Load vision too (default)",
-                offLabel: "Skip vision --language-only",
-                tag: kTagLanguageOnly)),
-            gatedSubmenu("Allowed host  --allowed-host", tag: kTagAllowedHost, items: hostItems()),
-            gatedSubmenu("Web UI  --no-webui", tag: kTagWebUI, items: webUIItems()),
-            // 实验特性放最后：正式版引擎不认识这个 flag
-            gatedSubmenu("Max cache disk  --max-cache-disk", tag: kTagCacheDisk, items: choiceItems(
-                current: cfg.maxCacheDisk,
-                options: [("", "Off (default)"),
-                          ("8G", "8G"), ("16G", "16G"), ("32G", "32G"), ("64G", "64G")],
-                customLabel: "Custom… (e.g. 12G)", tag: kTagCacheDisk)),
-        ]
-        }
+        settingsItems += (activeEngine == .mlx ? mlxSettingsItems() : splashSettingsItems())
         // 渐进式披露：引擎没跑起来时不展开 Settings，菜单保持精简。
         // 引擎/模型/启停始终在顶层，所以不会出现"想配置却无处可点"的死锁。
         if running { menu.addItem(submenuItem("Settings", items: settingsItems)) }
@@ -1722,6 +1654,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         it.isEnabled = false
         it.tag = kInfoTag          // 打标，方便 --dump-menu 跳过纯信息行
         return it
+    }
+
+    /// Settings 里的**分组标题行**。和 disabled() 的区别是刻意做出视觉层级：
+    /// 小号系统字体 + 次要色，让它读起来像"分类名"而不是"一个点不动的选项"。
+    /// 不可点、无 action，同样打 kInfoTag 让 --dump-menu 跳过。
+    private func sectionHeader(_ title: String) -> NSMenuItem {
+        let it = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        it.isEnabled = false
+        it.tag = kInfoTag
+        let style = NSMutableParagraphStyle()
+        style.alignment = .left
+        style.firstLineHeadIndent = 2
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .paragraphStyle: style,
+        ]
+        it.attributedTitle = NSAttributedString(string: title.uppercased(), attributes: attrs)
+        return it
+    }
+
+    /// 一个分组：标题行 + 其下参数项。首个分组不加前置分隔线，后续分组之间用分隔线断开，
+    /// 这样 14–15 项的长菜单能靠"标题 + 空白"扫读，而不是逐行看 flag 名。
+    private func section(_ title: String, first: Bool = false, _ items: [NSMenuItem]) -> [NSMenuItem] {
+        (first ? [] : [NSMenuItem.separator()]) + [sectionHeader(title)] + items
     }
 
     private func submenuItem(_ title: String, items: [NSMenuItem]) -> NSMenuItem {
@@ -1939,106 +1896,188 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         return [a, b]
     }
 
+    /// Splash 引擎的参数菜单。按**使用意图**分三组，每组一个小号标题行 + 分隔线，
+    /// 让 14 项能靠扫读标题定位，而不是逐行看 flag 名。
+    /// 分组依据是"用户调它时想解决什么问题"，不是技术子系统：
+    ///   - Memory & cache：吃多少机器资源（Context 归这里，因为它决定 KV cache 占用）
+    ///   - Model & decoding：模型怎么想、看什么（Max image pixels 与 Language only 同组）
+    ///   - Serving & access：谁能连、怎么连（Max request size 是接口契约，归这里）
+    private func splashSettingsItems() -> [NSMenuItem] {
+        var items: [NSMenuItem] = []
+
+        items += section("Memory & cache", first: true, [
+            gatedSubmenu("Max memory  --max-memory", tag: kTagMaxMemory, items: choiceItems(
+                current: cfg.maxMemory,
+                options: [("auto", "auto (≈107 GB, M5 Max limit)"),
+                          ("24G", "24G"), ("32G", "32G"), ("48G", "48G"),
+                          ("64G", "64G"), ("96G", "96G")],
+                customLabel: "Custom… (e.g. 28G)", tag: kTagMaxMemory)),
+            gatedSubmenu("Context  --max-context", tag: kTagMaxContext, items: choiceItems(
+                current: cfg.maxContext,
+                options: [("auto", "auto (262144 = 256K)"),
+                          ("32K", "32K"), ("64K", "64K"), ("128K", "128K"), ("256K", "256K")],
+                customLabel: "Custom… (e.g. 100K)", tag: kTagMaxContext)),
+            gatedSubmenu("KV cache format  --kv-format", tag: kTagKvFormat, items: choiceItems(
+                current: cfg.kvFormat,
+                options: [("", "int8 (engine default)"),
+                          ("bf16", "bf16 — more memory, no quant loss")],
+                customLabel: "", tag: kTagKvFormat, custom: false)),
+            gatedSubmenu("Max cache disk  --max-cache-disk", tag: kTagCacheDisk, items: choiceItems(
+                current: cfg.maxCacheDisk,
+                options: [("", "Off (default)"),
+                          ("8G", "8G"), ("16G", "16G"), ("32G", "32G"), ("64G", "64G")],
+                customLabel: "Custom… (e.g. 12G)", tag: kTagCacheDisk)),
+        ])
+
+        items += section("Model & decoding", [
+            gatedSubmenu("Reasoning effort  --default-reasoning-effort", tag: kTagReasoningEffort, items: choiceItems(
+                current: cfg.reasoningEffort,
+                options: [("", "Engine default" + templateEffortDefaultHint()),
+                          ("none", "none — no thinking (fastest)"),
+                          ("minimal", "minimal"), ("low", "low"),
+                          ("medium", "medium"), ("high", "high")],
+                customLabel: "Custom… (xhigh / max)", tag: kTagReasoningEffort)),
+            gatedSubmenu("Draft model  --draft-model", tag: kTagDraftModel, items: choiceItems(
+                current: cfg.draftModel,
+                options: [("", "Auto (engine-picked DFlash2)")],
+                customLabel: "Custom… (repo or local dir)", tag: kTagDraftModel)),
+            gatedSubmenu("Model revision  --revision", tag: kTagRevision, items: choiceItems(
+                current: cfg.revision,
+                options: [("", "Repository default")],
+                customLabel: "Custom… (branch / tag / commit)", tag: kTagRevision)),
+            gatedSubmenu("Language only  --language-only", tag: kTagLanguageOnly, items: boolItems(
+                on: !cfg.languageOnly,
+                onLabel: "Load vision too (default)",
+                offLabel: "Skip vision --language-only",
+                tag: kTagLanguageOnly)),
+            gatedSubmenu("Max image pixels  --max-image-pixels", tag: kTagMaxImagePixels, items: choiceItems(
+                current: cfg.maxImagePixels,
+                options: [("", "Engine default (4194304)"),
+                          ("1048576", "1M  = 1048576"), ("2097152", "2M  = 2097152"),
+                          ("4194304", "4M  = 4194304"), ("8388608", "8M  = 8388608")],
+                customLabel: "Custom… (pixel count)", tag: kTagMaxImagePixels)),
+        ])
+
+        items += section("Serving & access", [
+            gatedSubmenu("Port  --port", tag: kTagPort, items: choiceItems(
+                current: cfg.port,
+                options: [("8000", "8000 (Splash default)"),
+                          ("8080", "8080"), ("8123", "8123"), ("9000", "9000")],
+                customLabel: "Custom… (e.g. 7000)", tag: kTagPort)),
+            gatedSubmenu("Allowed host  --allowed-host", tag: kTagAllowedHost, items: hostItems()),
+            // 这一项不是 CLI 参数：Splash-MLX 通过环境变量注入（--api-key 的 default 就是它）
+            submenuItem("API Key  $SPLASH_API_KEY", items: apiKeyItems()),
+            gatedSubmenu("Web UI  --no-webui", tag: kTagWebUI, items: webUIItems()),
+            gatedSubmenu("Max request size  --max-request-size", tag: kTagMaxRequestSize, items: choiceItems(
+                current: cfg.maxRequestSize,
+                options: [("", "128M (Splash 1.0.1 default — flag omitted)"),
+                          ("64M", "64M"), ("256M", "256M"), ("512M", "512M"), ("1G", "1G")],
+                customLabel: "Custom… (e.g. 32M)", tag: kTagMaxRequestSize)),
+        ])
+
+        return items
+    }
+
     /// mlx-serve 的参数菜单。字段全部来自 `MLXConfig`（与 Splash 那套完全隔离），
     /// 每一项都过 `gatedSubmenu` —— 引擎 `--help` 里没有该 flag 就整组置灰。
+    /// 分组与 Splash 同一套意图口径；Prefix cache 因为项多（4 个）单独成组，
+    /// 塞进 Memory 会把它们稀释掉。
     private func mlxSettingsItems() -> [NSMenuItem] {
         var items: [NSMenuItem] = []
 
-        items.append(gatedSubmenu("Port  --port", tag: kTagMlxPort, items: choiceItems(
-            current: cfg.mlx.port,
-            options: [("11234", "11234 (mlx-serve default)"),
-                      ("8000", "8000"), ("8080", "8080"),
-                      ("11434", "11434 (Ollama drop-in)")],
-            customLabel: "Custom… (e.g. 11235)", tag: kTagMlxPort)))
+        items += section("Memory & context", first: true, [
+            gatedSubmenu("Context  --ctx-size", tag: kTagMlxCtx, items: choiceItems(
+                current: cfg.mlx.ctxSize,
+                options: [("", "auto (budgeted from model + GPU memory)"),
+                          ("32768", "32K"), ("65536", "64K"),
+                          ("131072", "128K"), ("262144", "256K")],
+                customLabel: "Custom… (e.g. 96K)", tag: kTagMlxCtx)),
+            gatedSubmenu("KV cache quant  --kv-quant", tag: kTagMlxKvQuant, items: choiceItems(
+                current: cfg.mlx.kvQuant,
+                options: [("off", "off (default)"), ("4", "4-bit"), ("8", "8-bit")],
+                customLabel: "Custom…", tag: kTagMlxKvQuant)),
+            // 所有常驻模型的「总」内存上限。选项刻意保守 —— 调太小会频繁驱逐、反而更慢
+            gatedSubmenu("Max resident memory  --max-resident-mem", tag: kTagMlxResidentMem, items: choiceItems(
+                current: cfg.mlx.maxResidentMem,
+                options: [("", "Engine default (80% of wired limit)"),
+                          ("48GB", "48GB"), ("64GB", "64GB"), ("96GB", "96GB")],
+                customLabel: "Custom… (e.g. 80GB)", tag: kTagMlxResidentMem)),
+            gatedSubmenu("Max resident models  --max-resident-models", tag: kTagMlxResident, items: choiceItems(
+                current: cfg.mlx.maxResidentModels,
+                options: [("", "Engine default (3)"), ("1", "1"), ("2", "2"), ("3", "3")],
+                customLabel: "Custom…", tag: kTagMlxResident)),
+        ])
 
-        items.append(gatedSubmenu("Bind address  --host", tag: kTagMlxHost, items: choiceItems(
-            current: cfg.mlx.host,
-            // 只给"绑本机"。暴露到局域网既不是性能收益、又降低安全性，
-            // 按"只开放安全且有效益的项"的原则不放进菜单 —— 真需要就手改配置。
-            options: [("127.0.0.1", "127.0.0.1 — this Mac only (default)")],
-            customLabel: "Custom… (e.g. 192.168.1.5)", tag: kTagMlxHost)))
+        // 前缀缓存单独成组：四项是同一缓存的不同维度（内存层 / SSD 层 / 条数 / 驱逐），
+        // 拆开会把它们稀释掉。Idle evict 放这里而非内存组 —— 用户找它的场景通常是
+        // "为什么缓存没了 / 模型被踢了"，属于缓存生命周期。
+        items += section("Prefix cache", [
+            // 内存层预算：引擎默认只给 2GB，大内存机器加大能明显提高命中率
+            gatedSubmenu("Prefix cache memory  --prefix-cache-mem", tag: kTagMlxPrefixMem, items: choiceItems(
+                current: cfg.mlx.prefixCacheMem,
+                options: [("", "Engine default (2GB)"),
+                          ("4GB", "4GB"), ("8GB", "8GB"), ("16GB", "16GB")],
+                customLabel: "Custom… (e.g. 6GB)", tag: kTagMlxPrefixMem)),
+            gatedSubmenu("Prefix cache SSD  --prefix-cache-disk", tag: kTagMlxPrefixDisk, items: choiceItems(
+                current: cfg.mlx.prefixCacheDisk,
+                options: [("", "Off (default)"),
+                          ("4GB", "4GB"), ("10GB", "10GB"), ("32GB", "32GB")],
+                customLabel: "Custom… (e.g. 10GB)", tag: kTagMlxPrefixDisk)),
+            gatedSubmenu("Prefix cache entries  --prefix-cache-entries", tag: kTagMlxPrefixEnt, items: choiceItems(
+                current: cfg.mlx.prefixCacheEntries,
+                options: [("", "Engine default (32)"),
+                          ("64", "64"), ("128", "128"), ("256", "256")],
+                customLabel: "Custom… (count)", tag: kTagMlxPrefixEnt)),
+            gatedSubmenu("Idle evict  --idle-evict-secs", tag: kTagMlxIdle, items: choiceItems(
+                current: cfg.mlx.idleEvictSecs,
+                options: [("", "Off (default)"), ("300", "300 s"), ("900", "900 s"), ("3600", "3600 s")],
+                customLabel: "Custom… (seconds)", tag: kTagMlxIdle)),
+        ])
 
-        items.append(gatedSubmenu("Context  --ctx-size", tag: kTagMlxCtx, items: choiceItems(
-            current: cfg.mlx.ctxSize,
-            options: [("", "auto (budgeted from model + GPU memory)"),
-                      ("32768", "32K"), ("65536", "64K"),
-                      ("131072", "128K"), ("262144", "256K")],
-            customLabel: "Custom… (e.g. 96K)", tag: kTagMlxCtx)))
-
-        items.append(gatedSubmenu("KV cache quant  --kv-quant", tag: kTagMlxKvQuant, items: choiceItems(
-            current: cfg.mlx.kvQuant,
-            options: [("off", "off (default)"), ("4", "4-bit"), ("8", "8-bit")],
-            customLabel: "Custom…", tag: kTagMlxKvQuant)))
-
-        items.append(gatedSubmenu("Prefix cache SSD  --prefix-cache-disk", tag: kTagMlxPrefixDisk, items: choiceItems(
-            current: cfg.mlx.prefixCacheDisk,
-            options: [("", "Off (default)"),
-                      ("4GB", "4GB"), ("10GB", "10GB"), ("32GB", "32GB")],
-            customLabel: "Custom… (e.g. 10GB)", tag: kTagMlxPrefixDisk)))
-
-        // 内存层预算：引擎默认只给 2GB，大内存机器加大能明显提高命中率
-        items.append(gatedSubmenu("Prefix cache memory  --prefix-cache-mem", tag: kTagMlxPrefixMem, items: choiceItems(
-            current: cfg.mlx.prefixCacheMem,
-            options: [("", "Engine default (2GB)"),
-                      ("4GB", "4GB"), ("8GB", "8GB"), ("16GB", "16GB")],
-            customLabel: "Custom… (e.g. 6GB)", tag: kTagMlxPrefixMem)))
-
-        items.append(gatedSubmenu("Prefix cache entries  --prefix-cache-entries", tag: kTagMlxPrefixEnt, items: choiceItems(
-            current: cfg.mlx.prefixCacheEntries,
-            options: [("", "Engine default (32)"),
-                      ("64", "64"), ("128", "128"), ("256", "256")],
-            customLabel: "Custom… (count)", tag: kTagMlxPrefixEnt)))
-
-        items.append(gatedSubmenu("Max resident models  --max-resident-models", tag: kTagMlxResident, items: choiceItems(
-            current: cfg.mlx.maxResidentModels,
-            options: [("", "Engine default (3)"), ("1", "1"), ("2", "2"), ("3", "3")],
-            customLabel: "Custom…", tag: kTagMlxResident)))
-
-        // 所有常驻模型的「总」内存上限。选项刻意保守 —— 调太小会频繁驱逐、反而更慢
-        items.append(gatedSubmenu("Max resident memory  --max-resident-mem", tag: kTagMlxResidentMem, items: choiceItems(
-            current: cfg.mlx.maxResidentMem,
-            options: [("", "Engine default (80% of wired limit)"),
-                      ("48GB", "48GB"), ("64GB", "64GB"), ("96GB", "96GB")],
-            customLabel: "Custom… (e.g. 80GB)", tag: kTagMlxResidentMem)))
-
-        items.append(gatedSubmenu("Idle evict  --idle-evict-secs", tag: kTagMlxIdle, items: choiceItems(
-            current: cfg.mlx.idleEvictSecs,
-            options: [("", "Off (default)"), ("300", "300 s"), ("900", "900 s"), ("3600", "3600 s")],
-            customLabel: "Custom… (seconds)", tag: kTagMlxIdle)))
-
-        items.append(gatedSubmenu("Drafter  --drafter", tag: kTagMlxDrafter, items: choiceItems(
-            current: cfg.mlx.drafter,
-            options: [("", "Auto (use the checkpoint's own)")],
-            customLabel: "Custom… (drafter folder)", tag: kTagMlxDrafter)))
-
-        // MTP 投机解码。三态而非布尔：MoE 模型引擎**默认关** MTP，
-        // 想开必须显式 --mtp（旧版只有负向开关，导致 --mtp 永远缺席）。
-        // 第二道门是模型包真带头（cap: .mtp），没带头整组置灰并说明原因。
-        items.append(gatedSubmenu("MTP speculative  --mtp", tag: kTagMlxMTP, items: choiceItems(
-            current: cfg.mlx.mtpMode,
-            options: [("on", "On — pass --mtp (required for MoE models)"),
-                      ("auto", "Auto — engine default (off for MoE, on for dense)"),
-                      ("off", "Off — pass --no-mtp")],
-            customLabel: "", tag: kTagMlxMTP, custom: false), cap: .mtp))
-
-        // PLD：引擎默认开，这里只给"强制关"的出口
-        items.append(gatedSubmenu("Prompt lookup decoding  --no-pld", tag: kTagMlxPLD, items: boolItems(
-            on: cfg.mlx.enablePLD,
-            onLabel: "Enabled (engine default)",
-            offLabel: "Force-disable --no-pld",
-            tag: kTagMlxPLD)))
-
-        items.append(gatedSubmenu("Vision  --no-vision", tag: kTagMlxVision, items: boolItems(
-            on: !cfg.mlx.noVision,
-            onLabel: "Load the vision encoder",
-            offLabel: "Skip it --no-vision (saves memory)",
-            tag: kTagMlxVision), cap: .vision))
-
+        items += section("Model & decoding", [
+            // MTP 投机解码。三态而非布尔：MoE 模型引擎**默认关** MTP，
+            // 想开必须显式 --mtp（旧版只有负向开关，导致 --mtp 永远缺席）。
+            // 第二道门是模型包真带头（cap: .mtp），没带头整组置灰并说明原因。
+            gatedSubmenu("MTP speculative  --mtp", tag: kTagMlxMTP, items: choiceItems(
+                current: cfg.mlx.mtpMode,
+                options: [("on", "On — pass --mtp (required for MoE models)"),
+                          ("auto", "Auto — engine default (off for MoE, on for dense)"),
+                          ("off", "Off — pass --no-mtp")],
+                customLabel: "", tag: kTagMlxMTP, custom: false), cap: .mtp),
+            // PLD：引擎默认开，这里只给"强制关"的出口
+            gatedSubmenu("Prompt lookup decoding  --no-pld", tag: kTagMlxPLD, items: boolItems(
+                on: cfg.mlx.enablePLD,
+                onLabel: "Enabled (engine default)",
+                offLabel: "Force-disable --no-pld",
+                tag: kTagMlxPLD)),
+            gatedSubmenu("Drafter  --drafter", tag: kTagMlxDrafter, items: choiceItems(
+                current: cfg.mlx.drafter,
+                options: [("", "Auto (use the checkpoint's own)")],
+                customLabel: "Custom… (drafter folder)", tag: kTagMlxDrafter)),
+            gatedSubmenu("Vision  --no-vision", tag: kTagMlxVision, items: boolItems(
+                on: !cfg.mlx.noVision,
+                onLabel: "Load the vision encoder",
+                offLabel: "Skip it --no-vision (saves memory)",
+                tag: kTagMlxVision), cap: .vision),
+        ])
         // Metrics 不在这里出现：它被强制打开（见 MLXConfig.serveArguments）。
         // 菜单的运行信息栏要靠它取数，做成开关只会让用户把自己看瞎。
 
-        items.append(.separator())
-        items.append(submenuItem("Model folder…", items: modelDirItems()))
+        items += section("Serving", [
+            gatedSubmenu("Port  --port", tag: kTagMlxPort, items: choiceItems(
+                current: cfg.mlx.port,
+                options: [("11234", "11234 (mlx-serve default)"),
+                          ("8000", "8000"), ("8080", "8080"),
+                          ("11434", "11434 (Ollama drop-in)")],
+                customLabel: "Custom… (e.g. 11235)", tag: kTagMlxPort)),
+            gatedSubmenu("Bind address  --host", tag: kTagMlxHost, items: choiceItems(
+                current: cfg.mlx.host,
+                // 只给"绑本机"。暴露到局域网既不是性能收益、又降低安全性，
+                // 按"只开放安全且有效益的项"的原则不放进菜单 —— 真需要就手改配置。
+                options: [("127.0.0.1", "127.0.0.1 — this Mac only (default)")],
+                customLabel: "Custom… (e.g. 192.168.1.5)", tag: kTagMlxHost)),
+            submenuItem("Model folder…", items: modelDirItems()),
+        ])
 
         return items
     }
