@@ -1,4 +1,4 @@
-//  SplashBar 图标生成器
+//  SplashMLX 图标生成器
 //  用 CoreGraphics 程序化绘制，输出：
 //    - AppIcon.iconset/*.png  → iconutil 打包成 AppIcon.icns
 //    - menubar_{running,paused,stopped}[@2x|@3x].png

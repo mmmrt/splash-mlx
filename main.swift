@@ -289,23 +289,11 @@ private let kKpiTtft  = "kpi:ttft"
 private func homeURL() -> URL { FileManager.default.homeDirectoryForCurrentUser }
 
 private var appSupportDir: URL { homeURL().appendingPathComponent("Library/Application Support/SplashMLX") }
-/// 改名前（SplashBar）的数据目录，仅用于一次性迁移
-private var legacyAppSupportDir: URL { homeURL().appendingPathComponent("Library/Application Support/SplashBar") }
 private var configURL:     URL { appSupportDir.appendingPathComponent("config.json") }
 private var pidURL:        URL { appSupportDir.appendingPathComponent("splash-mlx.pid") }
 private var logOutPath: String { homeURL().appendingPathComponent("Library/Logs/splashmlx.out.log").path }
 private var logErrPath: String { homeURL().appendingPathComponent("Library/Logs/splashmlx.err.log").path }
 
-/// 一次性把旧 Splash-MLX 的配置搬到 SplashMLX。
-/// **只在目标不存在时搬**，绝不覆盖 —— 否则用户在新版里的设置会被老配置顶掉。
-func migrateLegacyConfigIfNeeded() {
-    let fm = FileManager.default
-    guard !fm.fileExists(atPath: configURL.path) else { return }
-    let src = legacyAppSupportDir.appendingPathComponent("config.json")
-    guard fm.fileExists(atPath: src.path) else { return }
-    try? fm.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
-    try? fm.copyItem(at: src, to: configURL)
-}
 /// 用户手动指定的模型目录（空 = 自动发现）。
 /// 下面的路径变量和 Service 一样是全局的、拿不到 AppDelegate 的 cfg，
 /// 所以由 applyConfig 统一同步进来。每个引擎各存一个。
@@ -558,7 +546,6 @@ final class Config: Codable {
     }
 
     static func load() -> Config {
-        migrateLegacyConfigIfNeeded()   // 从旧的 Splash-MLX 目录搬一次配置（幂等）
         if let data = try? Data(contentsOf: configURL),
            let cfg = try? JSONDecoder().decode(Config.self, from: data) {
             return cfg
