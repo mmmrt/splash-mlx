@@ -609,8 +609,9 @@ final class Config: Codable {
     /// --max-image-pixels。留空=不传该参数，用引擎默认（4194304）
     var maxImagePixels: String = ""
     /// --max-cache-disk。留空=不传该参数（即关闭 SSD 缓存层）。
-    /// 注意：这是实验特性，只有上游 PR #3 的 SSD-tier 构建才认识它，
-    /// 正式版（含 1.0.1）传了会让 argparse 直接退出、服务起不来 —— 见 serveArguments 的过滤。
+    /// 1.1.0 起为正式特性（1.0.x 及更早不认识，传了会让 argparse 直接退出、
+    /// 服务起不来）—— 所以仍走 serveArguments 的 flagAvailable 过滤，老引擎上自动降级为不传。
+    /// 实测注意：SSD 层不跨进程重启留存，重启后首次请求仍是 cached 0。
     var maxCacheDisk: String = ""
     /// 手动指定 Splash 的模型目录（空 = 按 install/paths.py 的规则自动判定）
     var modelDirSplash: String = ""
@@ -681,8 +682,8 @@ final class Config: Codable {
     ///
     /// **除了 `--model`，其余每一个 flag 都先问引擎认不认识。** 传一个 argparse 不认识的选项，
     /// splash 会在解析阶段就退出（`unrecognized arguments`），服务根本起不来 ——
-    /// 比"参数被忽略"严重得多。典型场景：SSD 缓存层只在 PR #3 的分支里，
-    /// 用户在实验构建上把 `--max-cache-disk` 存进配置，之后换回正式版就会踩到。
+    /// 比"参数被忽略"严重得多。典型场景：SSD 缓存层（--max-cache-disk）在 1.1.0 才转正，
+    /// 用户在 1.1.0 上把它存进配置，之后回退到 1.0.x 就会踩到。
     ///
     /// 这里必须和 `gatedSubmenu` 的置灰范围**完全一致**：菜单里灰掉的项如果还被拼进命令行，
     /// 就不是"参数失效"而是"服务起不来"了。
@@ -1707,9 +1708,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // 门一：引擎认不认这个 flag
         if let flag = flagForTag(tag), Service.flagsProbed, !Service.flagAvailable(flag) {
             var header: [NSMenuItem] = [disabled("Engine \(Service.installedVersion() ?? "?") has no \(flag)")]
-            // SSD 缓存层来自上游未合并的 PR #3，光说"不支持"不够，得告诉用户去哪儿弄
+            // SSD 缓存层是 splash 1.1.0 才转正的特性，光说"不支持"不够，得告诉用户怎么拿到
             if flag == "--max-cache-disk" {
-                header.append(disabled("Needs the upstream PR #3 SSD-tier build"))
+                header.append(disabled("Upgrade splash to 1.1.0 or later"))
             }
             header.append(.separator())
             for it in items where !it.isSeparatorItem { it.isEnabled = false }
