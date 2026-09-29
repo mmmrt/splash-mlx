@@ -256,6 +256,8 @@ private let kTagMlxResidentMem = 23
 private let kTagMlxDrafter    = 18
 private let kTagMlxVision     = 19
 private let kTagMlxMetrics    = 20
+private let kTagMlxMTP        = 24
+private let kTagMlxPLD        = 25
 
 /// MLX 版的能力约束表。语义和 kGatedParams 完全一致：
 /// 引擎 `--help` 里没有这个 flag，整组就置灰、且不拼进命令行。
@@ -273,10 +275,22 @@ private let kMlxGatedParams: [(tag: Int, flag: String)] = [
     (kTagMlxDrafter,    "--drafter"),
     (kTagMlxVision,     "--no-vision"),
     (kTagMlxMetrics,    "--metrics"),
+    (kTagMlxMTP,        "--mtp"),
+    (kTagMlxPLD,        "--no-pld"),
 ]
 
 private func flagForTag(_ tag: Int) -> String? {
     (kGatedParams + kMlxGatedParams).first { $0.tag == tag }?.flag
+}
+
+/// tag → 该参数依赖的**模型包自带部件**。和 flagForTag 同构，供 validateMenuItem 兜底。
+/// 没登记 = 不依赖模型部件（只受引擎能力门控）。
+private func capGateForTag(_ tag: Int) -> AppDelegate.ModelCapGate? {
+    switch tag {
+    case kTagMlxMTP:    return .mtp
+    case kTagMlxVision: return .vision
+    default:            return nil
+    }
 }
 // sys/proc.h: SIDL=1 SRUN=2 SSLEEP=3 SSTOP=4 SZOMB=5
 // 注意 SSTOP 是 4，写成 3(SSLEEP) 会导致暂停永远检测不到
@@ -340,6 +354,60 @@ private var engineModelsDir: URL {
     }
 }
 
+// ==== MODEL-CAPS-BEGIN ====
+/// 模型包**自带**的能力（MTP 投机头 / 视觉塔）。和 `Service.flagAvailable` 是两条独立门控：
+/// 引擎认不认某个 flag 问的是引擎 `--help`；模型有没有某个部件问的是**磁盘上的包**。
+/// 两者都满足，菜单项才可用 —— 例如 `--mtp` 引擎认识、但模型没带头，开了也白开。
+///
+/// 探测依据（均在真机上对两种打包风格实测过）：
+///   - MTP：① `mtp/weights.safetensors` sidecar（ddalcu 的 Qwen3.6 包）
+///           ② 主分片里带 `.mtp.` 的张量（Qwen3.8-Flash-Next 把 MTP 并进主 shard，
+///              形如 `language_model.mtp.*`，无 sidecar、config 里也没有 num_nextn_predict_layers）
+///   - Vision：① `model-vision.safetensors` 独立文件 ② 主分片里的视觉张量
+///              （`model.visual.*` 或 `vision_tower.*` 两种前缀都见过）③ config.json 的 `vision_config`
+struct ModelCaps {
+    var mtp: Bool = false
+    var vision: Bool = false
+}
+/// 按路径缓存：菜单每次展开都重建，不能每次重读几十 MB 的 index.json。
+private var modelCapsCache: [String: ModelCaps] = [:]
+
+private func modelCaps(_ path: String) -> ModelCaps {
+    if path.isEmpty { return ModelCaps() }
+    if let hit = modelCapsCache[path] { return hit }
+    let fm = FileManager.default
+    var caps = ModelCaps()
+
+    caps.mtp = fm.fileExists(atPath: (path as NSString).appendingPathComponent("mtp/weights.safetensors"))
+    caps.vision = fm.fileExists(atPath: (path as NSString).appendingPathComponent("model-vision.safetensors"))
+
+    // 主分片张量名：只读 index.json 的 key（不碰权重本体），失败就保持已有结论。
+    let indexPath = (path as NSString).appendingPathComponent("model.safetensors.index.json")
+    if let data = try? Data(contentsOf: URL(fileURLWithPath: indexPath)),
+       let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+       let wm = root["weight_map"] as? [String: Any] {
+        for k in wm.keys {
+            if !caps.mtp, k.hasPrefix("mtp.") || k.contains(".mtp.") { caps.mtp = true }
+            if !caps.vision, k.contains(".visual.") || k.hasPrefix("vision_tower.") || k.contains(".vision_tower.") { caps.vision = true }
+            if caps.mtp && caps.vision { break }
+        }
+    }
+    // config.json 的 vision_config 是最后一道保险（纯文本模型不会有它）
+    if !caps.vision,
+       let data = try? Data(contentsOf: URL(fileURLWithPath: (path as NSString).appendingPathComponent("config.json"))),
+       let cfg = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+       cfg["vision_config"] != nil {
+        caps.vision = true
+    }
+
+    modelCapsCache[path] = caps
+    return caps
+}
+
+/// 换模型/换引擎/改模型目录后调用，避免拿到上一个包的探测结果
+func invalidateModelCapsCache() { modelCapsCache.removeAll() }
+// ==== MODEL-CAPS-END ====
+
 /// Splash 真正把模型包落盘的地方（HF 缓存约定）。
 /// 顺序：HF_HUB_CACHE → $HF_HOME/hub → ~/.cache/huggingface/hub
 private var hfHubDir: URL {
@@ -389,7 +457,13 @@ struct MLXConfig: Codable {
     var apiKey: String = ""
     /// Prompt Lookup Decoding（引擎默认开）
     var enablePLD: Bool = true
-    var noMTP: Bool = false
+    /// MTP 投机解码，三态：
+    ///   "auto" = 不传 flag，完全交给引擎默认（**MoE 模型引擎默认关 MTP**，dense 默认开）
+    ///   "on"   = 显式 `--mtp`（MoE 想开必须这样，引擎不会自己开）
+    ///   "off"  = 显式 `--no-mtp`
+    /// 默认 "on"：菜单里既然给了这一项，用户的合理预期就是"我选了开，它就开"；
+    /// 旧配置的 noMTP=true 会迁移成 "off"，noMTP=false 迁移成 "on"（见 init(from:)）。
+    var mtpMode: String = "on"
     /// --drafter：Gemma 4 assistant 或 DFlash block-drafter 的目录
     var drafter: String = ""
     /// 手动指定模型目录（空 = 自动发现）。兜住 --model-dir 指到别处的情况
@@ -418,9 +492,23 @@ struct MLXConfig: Codable {
         metrics           = (try? c.decode(Bool.self, forKey: .metrics)) ?? metrics
         apiKey            = (try? c.decode(String.self, forKey: .apiKey)) ?? apiKey
         enablePLD         = (try? c.decode(Bool.self, forKey: .enablePLD)) ?? enablePLD
-        noMTP             = (try? c.decode(Bool.self, forKey: .noMTP)) ?? noMTP
+        // 老配置迁移：noMTP（旧版只有负向开关）→ mtpMode 三态。
+        // 老配置显式存了 noMTP=true 就尊重它（"off"）；否则一律 "on" ——
+        // 因为旧版根本没有"开 MTP"的能力，noMTP=false 只表示"没去关"，不代表用户想关。
+        // 用独立的 LegacyKeys 容器读旧键：noMTP 已不是字段，不能进合成 CodingKeys，
+        // 否则保存时会把废弃键写回配置文件。
+        let lc = try decoder.container(keyedBy: LegacyKeys.self)
+        if let legacy = try? lc.decode(Bool.self, forKey: .noMTP) {
+            mtpMode = legacy ? "off" : "on"
+        }
+        mtpMode           = (try? c.decode(String.self, forKey: .mtpMode)) ?? mtpMode
         drafter           = (try? c.decode(String.self, forKey: .drafter)) ?? drafter
         modelDir          = (try? c.decode(String.self, forKey: .modelDir)) ?? modelDir
+    }
+
+    /// 已废弃、但老配置文件里仍可能出现的键。只用于**读**，绝不写回。
+    private enum LegacyKeys: String, CodingKey {
+        case noMTP
     }
 
     /// 拼出 mlx-serve 的启动参数。
@@ -481,7 +569,14 @@ struct MLXConfig: Codable {
         // 让用户关掉它只会得到一排 0 —— 那就不是"可选项"，是必需品。
         if Service.flagAvailable("--metrics") { a += ["--metrics"] }
         if !enablePLD, Service.flagAvailable("--no-pld") { a += ["--no-pld"] }
-        if noMTP, Service.flagAvailable("--no-mtp") { a += ["--no-mtp"] }
+        // MTP 三态：
+        //   "on"   显式传 --mtp —— MoE 模型引擎**默认关** MTP，不显式传就永远开不上（旧版缺 --mtp 的根因）
+        //   "off"  显式传 --no-mtp
+        //   "auto" 不传，完全交给引擎默认（dense 默认开、MoE 默认关）
+        // 双重门控：引擎要认识该 flag，且模型包里**真有 MTP 头**，否则静默丢弃 ——
+        // 和菜单置灰同一语义，避免传了没用的 flag 或让不认识的 flag 把启动打挂。
+        if mtpMode == "on", Service.flagAvailable("--mtp"), modelCaps(path).mtp { a += ["--mtp"] }
+        if mtpMode == "off", Service.flagAvailable("--no-mtp") { a += ["--no-mtp"] }
         if !apiKey.isEmpty, Service.flagAvailable("--api-key") { a += ["--api-key", apiKey] }
         return a
     }
@@ -1593,26 +1688,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     ///
     /// 探测失败（`serve --help` 都问不到）时**保持全部可用**：fail open。
     /// 宁可让用户能点，也不要因为问不到引擎就把他存好的配置判成无效。
-    private func gatedSubmenu(_ title: String, tag: Int, items: [NSMenuItem]) -> NSMenuItem {
-        guard let flag = flagForTag(tag),
-              Service.flagsProbed,
-              !Service.flagAvailable(flag) else {
-            return submenuItem(title, items: items)
+    ///
+    /// `cap` 是第二道门：**模型包自带的能力**。引擎认识 flag ≠ 模型有对应部件，
+    /// 例如 `--mtp` 引擎认识、但模型没带头时开了也白开。传了 cap 就同时按
+    /// "磁盘上的包"置灰，并在可用时于菜单顶部显示探测结果（可视化）。
+    private func gatedSubmenu(_ title: String, tag: Int, items: [NSMenuItem],
+                              cap: ModelCapGate? = nil) -> NSMenuItem {
+        // 门一：引擎认不认这个 flag
+        if let flag = flagForTag(tag), Service.flagsProbed, !Service.flagAvailable(flag) {
+            var header: [NSMenuItem] = [disabled("Engine \(Service.installedVersion() ?? "?") has no \(flag)")]
+            // SSD 缓存层来自上游未合并的 PR #3，光说"不支持"不够，得告诉用户去哪儿弄
+            if flag == "--max-cache-disk" {
+                header.append(disabled("Needs the upstream PR #3 SSD-tier build"))
+            }
+            header.append(.separator())
+            for it in items where !it.isSeparatorItem { it.isEnabled = false }
+            return submenuItem(title, items: header + items)
         }
 
-        var header: [NSMenuItem] = [disabled("Engine \(Service.installedVersion() ?? "?") has no \(flag)")]
-        // SSD 缓存层来自上游未合并的 PR #3，光说"不支持"不够，得告诉用户去哪儿弄
-        if flag == "--max-cache-disk" {
-            header.append(disabled("Needs the upstream PR #3 SSD-tier build"))
+        // 门二：模型包里有没有这个部件
+        if let cap {
+            let caps = modelCaps(cfg.mlx.resolvedModelPath)
+            if !cap.present(in: caps) {
+                var header: [NSMenuItem] = [disabled(cap.missingReason)]
+                header.append(.separator())
+                for it in items where !it.isSeparatorItem { it.isEnabled = false }
+                return submenuItem(title, items: header + items)
+            }
+            // 可用：把探测结果亮出来，让用户看见"为什么这项能选"
+            return submenuItem(title, items: [disabled(cap.presentNote), .separator()] + items)
         }
-        header.append(.separator())
+        return submenuItem(title, items: items)
+    }
 
-        for it in items where !it.isSeparatorItem { it.isEnabled = false }
-        return submenuItem(title, items: header + items)
+    /// 参数对**模型包自带部件**的依赖。和 `kMlxGatedParams`（引擎能力）是两条独立门控。
+    enum ModelCapGate {
+        case mtp, vision
+        func present(in caps: ModelCaps) -> Bool {
+            switch self {
+            case .mtp:    return caps.mtp
+            case .vision: return caps.vision
+            }
+        }
+        var missingReason: String {
+            switch self {
+            case .mtp:    return "Model pack ships no MTP head (no mtp/ sidecar, no *.mtp.* tensors)"
+            case .vision: return "Model pack ships no vision tower"
+            }
+        }
+        var presentNote: String {
+            switch self {
+            case .mtp:    return "Model pack: MTP head detected"
+            case .vision: return "Model pack: vision tower detected"
+            }
+        }
     }
 
     private func choiceItems(current: String, options: [(String, String)],
-                             customLabel: String, tag: Int) -> [NSMenuItem] {
+                             customLabel: String, tag: Int, custom: Bool = true) -> [NSMenuItem] {
         var items = options.map { value, label -> NSMenuItem in
             let it = NSMenuItem(title: label, action: #selector(pickValue(_:)), keyEquivalent: "")
             it.target = self
@@ -1621,6 +1754,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             it.state = (value == current) ? .on : .off
             return it
         }
+        // 三态这类封闭枚举不该给 free-text 入口：手输一个非法值只会被静默丢弃
+        guard custom else { return items }
         items.append(.separator())
         let custom = NSMenuItem(title: customLabel, action: #selector(pickCustom(_:)), keyEquivalent: "")
         custom.target = self
@@ -1694,6 +1829,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         cfg.save()
         invalidateModelList()
+        invalidateModelCapsCache()   // 换了模型包，MTP/视觉探测结果必须重算
     }
 
     private func modelItems() -> [NSMenuItem] {
@@ -1795,11 +1931,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             options: [("", "Auto (use the checkpoint's own)")],
             customLabel: "Custom… (drafter folder)", tag: kTagMlxDrafter)))
 
+        // MTP 投机解码。三态而非布尔：MoE 模型引擎**默认关** MTP，
+        // 想开必须显式 --mtp（旧版只有负向开关，导致 --mtp 永远缺席）。
+        // 第二道门是模型包真带头（cap: .mtp），没带头整组置灰并说明原因。
+        items.append(gatedSubmenu("MTP speculative  --mtp", tag: kTagMlxMTP, items: choiceItems(
+            current: cfg.mlx.mtpMode,
+            options: [("on", "On — pass --mtp (required for MoE models)"),
+                      ("auto", "Auto — engine default (off for MoE, on for dense)"),
+                      ("off", "Off — pass --no-mtp")],
+            customLabel: "", tag: kTagMlxMTP, custom: false), cap: .mtp))
+
+        // PLD：引擎默认开，这里只给"强制关"的出口
+        items.append(gatedSubmenu("Prompt lookup decoding  --no-pld", tag: kTagMlxPLD, items: boolItems(
+            on: cfg.mlx.enablePLD,
+            onLabel: "Enabled (engine default)",
+            offLabel: "Force-disable --no-pld",
+            tag: kTagMlxPLD)))
+
         items.append(gatedSubmenu("Vision  --no-vision", tag: kTagMlxVision, items: boolItems(
             on: !cfg.mlx.noVision,
             onLabel: "Load the vision encoder",
             offLabel: "Skip it --no-vision (saves memory)",
-            tag: kTagMlxVision)))
+            tag: kTagMlxVision), cap: .vision))
 
         // Metrics 不在这里出现：它被强制打开（见 MLXConfig.serveArguments）。
         // 菜单的运行信息栏要靠它取数，做成开关只会让用户把自己看瞎。
@@ -1835,12 +1988,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         panel.prompt = "Use this folder"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         if activeEngine == .mlx { cfg.mlx.modelDir = url.path } else { cfg.modelDirSplash = url.path }
-        cfg.save(); applyConfig(cfg); invalidateModelList(); refresh()
+        cfg.save(); applyConfig(cfg); invalidateModelList(); invalidateModelCapsCache(); refresh()
     }
 
     @objc func clearModelDir() {
         if activeEngine == .mlx { cfg.mlx.modelDir = "" } else { cfg.modelDirSplash = "" }
-        cfg.save(); applyConfig(cfg); invalidateModelList(); refresh()
+        cfg.save(); applyConfig(cfg); invalidateModelList(); invalidateModelCapsCache(); refresh()
     }
 
     private func apiKeyItems() -> [NSMenuItem] {
@@ -1906,6 +2059,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if Service.managed || Service.status().up { _ = Service.stop() }
         cfg.engine = e
         cfg.save()
+        invalidateModelCapsCache()   // 换引擎 = 换模型集，能力探测结果作废
         applyConfig(cfg)
         invalidateModelList()
         refresh()
@@ -2141,6 +2295,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case kTagMlxDrafter:     cfg.mlx.drafter = v
         case kTagMlxVision:      cfg.mlx.noVision = (v == "off")
         case kTagMlxMetrics:     cfg.mlx.metrics = (v == "on")
+        case kTagMlxMTP:         cfg.mlx.mtpMode = v
+        case kTagMlxPLD:         cfg.mlx.enablePLD = (v == "on")
         default: return
         }
         cfg.save()
@@ -2307,6 +2463,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // 走和 rebuildMenu 同一张 tag→flag 表，保证两处判定范围永远一致
         // （曾经这里只兜底 cache-disk，另外两个同样会被过滤掉的 flag 漏了）。
         if let flag = flagForTag(menuItem.tag), !Service.flagAvailable(flag) { return false }
+        // 模型包没带对应部件的参数同样不许点（与 gatedSubmenu 的第二道门同源）
+        if let gate = capGateForTag(menuItem.tag),
+           !gate.present(in: modelCaps(cfg.mlx.resolvedModelPath)) { return false }
         return true
     }
 
@@ -2582,6 +2741,14 @@ func runCLI(_ argv: [String]) -> Bool {
         // 用当前引擎自己的那张门控表，否则 MLX 下会去查一堆 Splash 专属 flag
         for p in (activeEngine == .mlx ? kMlxGatedParams : kGatedParams) {
             print("  \(Service.flagAvailable(p.flag) ? "✅" : "❌") \(p.flag)")
+        }
+        // 模型包自带部件（第二道门）：和菜单置灰同一套探测
+        if activeEngine == .mlx {
+            let path = cfg.mlx.resolvedModelPath
+            let caps = modelCaps(path)
+            print("model:   \(path.isEmpty ? "(none / on-demand)" : path)")
+            print("  \(caps.mtp ? "✅" : "❌") MTP head (mtp/ sidecar or *.mtp.* tensors)")
+            print("  \(caps.vision ? "✅" : "❌") vision tower")
         }
         print("args:    \(cfg.serveArguments.joined(separator: " "))")
     case "--version-of":
