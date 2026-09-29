@@ -1569,7 +1569,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             submenuItem("API Key  $SPLASH_API_KEY", items: apiKeyItems()),
             gatedSubmenu("Reasoning effort  --default-reasoning-effort", tag: kTagReasoningEffort, items: choiceItems(
                 current: cfg.reasoningEffort,
-                options: [("", "Engine default"),
+                options: [("", "Engine default" + templateEffortDefaultHint()),
                           ("none", "none — no thinking (fastest)"),
                           ("minimal", "minimal"), ("low", "low"),
                           ("medium", "medium"), ("high", "high")],
@@ -1899,6 +1899,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         custom.target = self
         items.append(custom)
         return items
+    }
+
+    /// "Engine default" 的具体值。splash 的 effort 回退链是：
+    /// 请求参数 → --default-reasoning-effort → **模型 chat_template.jinja 里的默认**。
+    /// 菜单选 "Engine default" 就是不传 flag、落到第三层，所以直接把第三层读出来展示：
+    /// 从当前模型模板里找 `reasoning_effort|default('xhigh')` 这类写法。
+    /// 读不到（模型没下载/模板没有 effort 分档）就退回笼统说法，绝不瞎猜具体档位。
+    private func templateEffortDefaultHint() -> String {
+        // Splash 模型包布局：<modelsDir>/<org>/<repo>/tokenizer/chat_template.jinja
+        let modelDir = splashModelsDir.appendingPathComponent(cfg.model).path
+        let tplPath = (modelDir as NSString).appendingPathComponent("tokenizer/chat_template.jinja")
+        guard let tpl = try? String(contentsOfFile: tplPath, encoding: .utf8) else {
+            return " (model template decides)"
+        }
+        // jinja 写法：reasoning_effort|default('xhigh')
+        if let r = tpl.range(of: #"reasoning_effort\|default\('([a-z]+)'\)"#, options: .regularExpression) {
+            let m = tpl[r]
+            if let lo = m.firstIndex(of: "'"), let hi = m.lastIndex(of: "'"), lo < hi {
+                let v = m[m.index(after: lo)..<hi]
+                return " (= \(v), from model template)"
+            }
+        }
+        // 模板没有 effort 分档（如 Qwen3.6-35B-A3B-Splash）：thinking 由模板自身开关
+        if !tpl.contains("reasoning_effort") {
+            return " (template has no effort levels)"
+        }
+        return " (model template decides)"
     }
 
     /// 布尔开关的子菜单项：就两项，带勾选状态，**不追加 Custom…**。
