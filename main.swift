@@ -217,6 +217,11 @@ private let kTagAllowedHost    = 7
 private let kTagWebUI          = 8
 /// Splash 1.0.2 新增：服务级默认思考强度
 private let kTagReasoningEffort = 9
+/// Splash 1.1.0 新增四项
+private let kTagKvFormat       = 31
+private let kTagDraftModel     = 32
+private let kTagRevision       = 33
+private let kTagLanguageOnly   = 34
 
 /// 受引擎能力约束的参数：tag → 引擎上对应的长选项。
 ///
@@ -239,6 +244,11 @@ private let kGatedParams: [(tag: Int, flag: String)] = [
     (kTagAllowedHost,    "--allowed-host"),
     (kTagWebUI,          "--no-webui"),
     (kTagReasoningEffort, "--default-reasoning-effort"),
+    // Splash 1.1.0 新增：老版本引擎不认识，整组置灰而非传了起不来
+    (kTagKvFormat,       "--kv-format"),
+    (kTagDraftModel,     "--draft-model"),
+    (kTagRevision,       "--revision"),
+    (kTagLanguageOnly,   "--language-only"),
 ]
 
 /// mlx-serve 专属参数。tag 从 11 起编号，和 Splash 的 1–8 严格分开，
@@ -606,6 +616,14 @@ final class Config: Codable {
     var modelDirSplash: String = ""
     /// Splash 1.0.2：服务级默认思考强度（空 = 引擎/模型模板的默认）
     var reasoningEffort: String = ""
+    /// Splash 1.1.0 新增：--kv-format（int8 / bf16）。留空 = 引擎默认 int8
+    var kvFormat: String = ""
+    /// Splash 1.1.0 新增：--draft-model，覆盖引擎自动选的 DFlash2 仓库/目录（空 = 自动）
+    var draftModel: String = ""
+    /// Splash 1.1.0 新增：--revision，模型分支/tag/commit（空 = 仓库默认）
+    var revision: String = ""
+    /// Splash 1.1.0 新增：--language-only，跳过视觉准备与加载
+    var languageOnly: Bool = false
     var noWebUI: Bool = false
     var loginItem: Bool = false
     var autoStartOnLaunch: Bool = false
@@ -633,6 +651,10 @@ final class Config: Codable {
         maxCacheDisk      = (try? c.decode(String.self, forKey: .maxCacheDisk)) ?? maxCacheDisk
         modelDirSplash    = (try? c.decode(String.self, forKey: .modelDirSplash)) ?? modelDirSplash
         reasoningEffort   = (try? c.decode(String.self, forKey: .reasoningEffort)) ?? reasoningEffort
+        kvFormat          = (try? c.decode(String.self, forKey: .kvFormat)) ?? kvFormat
+        draftModel        = (try? c.decode(String.self, forKey: .draftModel)) ?? draftModel
+        revision          = (try? c.decode(String.self, forKey: .revision)) ?? revision
+        languageOnly      = (try? c.decode(Bool.self, forKey: .languageOnly)) ?? languageOnly
         noWebUI           = (try? c.decode(Bool.self, forKey: .noWebUI)) ?? noWebUI
         loginItem         = (try? c.decode(Bool.self, forKey: .loginItem)) ?? loginItem
         autoStartOnLaunch = (try? c.decode(Bool.self, forKey: .autoStartOnLaunch)) ?? autoStartOnLaunch
@@ -699,6 +721,18 @@ final class Config: Codable {
         if !reasoningEffort.isEmpty, Service.flagAvailable("--default-reasoning-effort") {
             a += ["--default-reasoning-effort", reasoningEffort]
         }
+        // ── Splash 1.1.0 新增的四项。同样逐项问引擎认不认识：
+        // 老版本 splash 不认识它们，传了会 argparse 直接退出，所以必须过滤。
+        if !kvFormat.isEmpty, Service.flagAvailable("--kv-format") {
+            a += ["--kv-format", kvFormat]
+        }
+        if !draftModel.isEmpty, Service.flagAvailable("--draft-model") {
+            a += ["--draft-model", draftModel]
+        }
+        if !revision.isEmpty, Service.flagAvailable("--revision") {
+            a += ["--revision", revision]
+        }
+        if languageOnly, Service.flagAvailable("--language-only") { a += ["--language-only"] }
         return a
     }
 }
@@ -1540,6 +1574,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                           ("minimal", "minimal"), ("low", "low"),
                           ("medium", "medium"), ("high", "high")],
                 customLabel: "Custom… (xhigh / max)", tag: kTagReasoningEffort)),
+            // ── Splash 1.1.0 新增四项。1.0.2 上会整组置灰并说明"Engine 1.0.2 has no --x"
+            gatedSubmenu("KV cache format  --kv-format", tag: kTagKvFormat, items: choiceItems(
+                current: cfg.kvFormat,
+                options: [("", "int8 (engine default)"),
+                          ("bf16", "bf16 — more memory, no quant loss")],
+                customLabel: "", tag: kTagKvFormat, custom: false)),
+            gatedSubmenu("Draft model  --draft-model", tag: kTagDraftModel, items: choiceItems(
+                current: cfg.draftModel,
+                options: [("", "Auto (engine-picked DFlash2)")],
+                customLabel: "Custom… (repo or local dir)", tag: kTagDraftModel)),
+            gatedSubmenu("Model revision  --revision", tag: kTagRevision, items: choiceItems(
+                current: cfg.revision,
+                options: [("", "Repository default")],
+                customLabel: "Custom… (branch / tag / commit)", tag: kTagRevision)),
+            gatedSubmenu("Language only  --language-only", tag: kTagLanguageOnly, items: boolItems(
+                on: !cfg.languageOnly,
+                onLabel: "Load vision too (default)",
+                offLabel: "Skip vision --language-only",
+                tag: kTagLanguageOnly)),
             gatedSubmenu("Allowed host  --allowed-host", tag: kTagAllowedHost, items: hostItems()),
             gatedSubmenu("Web UI  --no-webui", tag: kTagWebUI, items: webUIItems()),
             // 实验特性放最后：正式版引擎不认识这个 flag
@@ -2281,6 +2334,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case kTagMaxImagePixels: cfg.maxImagePixels = v
         case kTagCacheDisk:      cfg.maxCacheDisk = v
         case kTagReasoningEffort: cfg.reasoningEffort = v
+        case kTagKvFormat:       cfg.kvFormat = v
+        case kTagDraftModel:     cfg.draftModel = v
+        case kTagRevision:       cfg.revision = v
+        case kTagLanguageOnly:   cfg.languageOnly = (v == "off")
         // ── MLX 专属（写入 cfg.mlx，与 Splash 那套完全隔离）
         case kTagMlxPort:        cfg.mlx.port = v
         case kTagMlxHost:        cfg.mlx.host = v
@@ -2324,6 +2381,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case kTagMaxRequestSize: cfg.maxRequestSize = v
         case kTagMaxImagePixels: cfg.maxImagePixels = v
         case kTagCacheDisk:      cfg.maxCacheDisk = v
+        // 既有修复：reasoningEffort 的 Custom… 入口此前会被 default 吞掉（输入不保存）
+        case kTagReasoningEffort: cfg.reasoningEffort = v
+        case kTagDraftModel:     cfg.draftModel = v
+        case kTagRevision:       cfg.revision = v
         default: return
         }
         cfg.save()
@@ -2341,6 +2402,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case kTagMaxImagePixels: return ("Custom max image pixels", "integer pixel count, e.g. 4194304", cfg.maxImagePixels)
         case kTagCacheDisk:      return ("Custom max cache disk", "e.g. 8G / 12G / 64G", cfg.maxCacheDisk)
         case kTagReasoningEffort: return ("Custom reasoning effort", "none / minimal / low / medium / high / xhigh / max", cfg.reasoningEffort)
+        case kTagDraftModel:     return ("Custom draft model", "DFlash2 repo (owner/repo) or local directory", cfg.draftModel)
+        case kTagRevision:       return ("Custom model revision", "branch / tag / commit hash", cfg.revision)
         // ── MLX 专属
         case kTagMlxPort:        return ("Custom port", "1-65535, e.g. 11235", cfg.mlx.port)
         case kTagMlxHost:        return ("Custom bind address", "e.g. 0.0.0.0 / 127.0.0.1", cfg.mlx.host)
