@@ -121,6 +121,188 @@ private var engineLaunchPath: String {
 }
 // ==== ENGINE-PATH-RESOLVE-END ====
 
+// ==== THERMAL-BEGIN ====
+/// 机器热状态（真实摄氏度）。
+///
+/// **为什么不用 `pmset -g therm`**：在 Apple Silicon 上它不报告任何数值，
+/// 只有三行 "No thermal/performance warning level has been recorded"，
+/// 仅在真的触发过热告警时才有内容。所以它被用作**告警行**（有内容才显示），
+/// 常规温度另走别的路。
+///
+/// **为什么不用 `powermetrics`**：macOS 27.0 的采样器全集里没有 `smc`
+/// （只有 `thermal`，官方描述是 "thermal pressure notifications"，同样不给 °C），
+/// 而且非 root 直接拒绝 —— 菜单栏 App 要静默调用就得配免密 sudo，代价太大。
+///
+/// 实际取数走 **macmon**（brew，MIT，"Sudoless performance monitoring for Apple
+/// Silicon"）：它用 IOHIDEventSystemClient 私有 API 按 PrimaryUsagePage=0xff00 /
+/// PrimaryUsage=0x0005 匹配温度传感器，读 kIOHIDEventTypeTemperature 事件，**免 sudo**。
+/// 实测本机 CPU/GPU 各一个平均值，随负载实时变化（18.5W→12.9W 时 49.0→47.8°C）。
+///
+/// 单次采样实测 251–352 ms，**绝不能在主线程调**（会卡住菜单），
+/// 所以走后台采样 + 缓存 + 5 秒节流（温度变化很慢，没必要跟着 1 秒轮询跑）。
+struct ThermalSample {
+    var cpuTemp: Double = 0
+    var gpuTemp: Double = 0
+    var sysPower: Double = 0
+    /// `pmset -g therm` 的告警内容（无告警时为 nil）。与 macmon 独立采样：
+    /// 没装 macmon 也要能报告热告警。
+    var pmset: String? = nil
+    var at: Date = Date()
+    /// 是否真拿到了温度（macmon 不可用或传感器读不到时全为 0，不能当成 0°C 显示）
+    var hasTemps: Bool { cpuTemp > 0 || gpuTemp > 0 }
+}
+
+/// macmon 的位置：复用引擎那套「任意位置探测」，因为登录项启动的 App
+/// PATH 里没有 /opt/homebrew/bin，写死会「明明装了却说没有」。找不到则为 nil，上层降级。
+private let kMacmonBinResolved: String? = resolveEngineBinary("macmon", envOverride: "MACMON_BIN")
+
+enum Thermal {
+    /// 采样节流：温度变化很慢（实测 3 秒才动 1°C），5 秒足够，
+    /// 也避免每 5 秒白 spawn 一个 250ms 的进程。
+    static let minInterval: TimeInterval = 5.0
+
+    private static var cache: ThermalSample?
+    private static var lastSampleAt = Date.distantPast
+    private static var inflight = false
+    private static let lock = NSLock()
+
+    /// 最近一次成功的采样（可能为 nil：还没采到 / macmon 不可用）
+    static var current: ThermalSample? {
+        lock.lock(); defer { lock.unlock() }
+        return cache
+    }
+
+    /// 采样年龄（秒），用于判断缓存是否过旧
+    static var age: TimeInterval? {
+        lock.lock(); defer { lock.unlock() }
+        guard let c = cache else { return nil }
+        return Date().timeIntervalSince(c.at)
+    }
+
+    /// 后台触发一次采样。已在飞或未到节流窗口就直接返回，避免堆叠子进程。
+    /// pmset（9ms）与 macmon（250-350ms）都在后台跑：pmset 总是采，
+    /// 没装 macmon 时面板至少还能报告热告警与原生档位。
+    static func tick() {
+        lock.lock()
+        if inflight || Date().timeIntervalSince(lastSampleAt) < minInterval {
+            lock.unlock(); return
+        }
+        inflight = true
+        lastSampleAt = Date()
+        lock.unlock()
+
+        // 二进制解析放进后台：kMacmonBinResolved 首次惰性初始化会 spawn
+        // `brew --prefix` + `macmon --version`（实测约 180ms），若在主线程取，
+        // 菜单第一秒会明显卡一下。放进来后主线程只做节流判断，立即返回。
+        DispatchQueue.global(qos: .utility).async {
+            var s = ThermalSample()
+            s.pmset = pmsetWarning()
+            if let bin = kMacmonBinResolved {
+                // -i 100 是最短采样窗口（实测 251ms），-s 1 表示只出一行就退出
+                let r = run(bin, ["pipe", "-i", "100", "-s", "1"])
+                if r.status == 0, let t = parse(r.out) {
+                    s.cpuTemp = t.cpuTemp; s.gpuTemp = t.gpuTemp; s.sysPower = t.sysPower
+                }
+            }
+            s.at = Date()
+            lock.lock()
+            cache = s
+            inflight = false
+            lock.unlock()
+        }
+    }
+
+    /// macmon 的 JSON 是一整行，但 stdout 里可能混有进度输出，
+    /// 所以从后往前找第一个能解析成对象、且含 temp 段的行。
+    static func parse(_ text: String) -> ThermalSample? {
+        for line in text.split(separator: "\n").reversed() {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.hasPrefix("{"), t.hasSuffix("}"),
+                  let data = t.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let temp = obj["temp"] as? [String: Any] else { continue }
+            let cpu = (temp["cpu_temp_avg"] as? NSNumber)?.doubleValue ?? 0
+            let gpu = (temp["gpu_temp_avg"] as? NSNumber)?.doubleValue ?? 0
+            // 全 0 视为无效（传感器不可用时 macmon 就是给 0）
+            guard cpu > 0 || gpu > 0 else { continue }
+            var s = ThermalSample()
+            s.cpuTemp = cpu
+            s.gpuTemp = gpu
+            s.sysPower = (obj["sys_power"] as? NSNumber)?.doubleValue ?? 0
+            s.at = Date()
+            return s
+        }
+        return nil
+    }
+
+    /// 原生热压力档位（零成本，无子进程）。四档：nominal/fair/serious/critical。
+    static var thermalStateName: String {
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal:  return "nominal"
+        case .fair:     return "fair"
+        case .serious:  return "serious"
+        case .critical: return "critical"
+        @unknown default: return "unknown"
+        }
+    }
+
+    /// `pmset -g therm` 的**告警**内容。Apple Silicon 上它平时只有三行
+    /// "No ... has been recorded"，那种情况返回 nil（不占菜单位置）；
+    /// 真的记录过热告警时，把非 Note 行原样返回。实测约 9ms。
+    static func pmsetWarning() -> String? {
+        let r = run("/usr/bin/pmset", ["-g", "therm"])
+        guard r.status == 0 else { return nil }
+        let real = r.out.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("Note:") }
+        return real.isEmpty ? nil : real.joined(separator: " · ")
+    }
+
+    /// **同步**采样一次并写入缓存，返回结果。仅供 CLI 诊断（--thermal）使用：
+    /// 命令行里 tick() 的异步结果等不到，必须阻塞拿一次真实数据。
+    /// 面板路径不走这里 —— 菜单渲染绝不能等 250ms。
+    static func sampleSync() -> ThermalSample? {
+        var s = ThermalSample()
+        s.pmset = pmsetWarning()
+        if let bin = kMacmonBinResolved {
+            let r = run(bin, ["pipe", "-i", "100", "-s", "1"])
+            if r.status == 0, let t = parse(r.out) {
+                s.cpuTemp = t.cpuTemp; s.gpuTemp = t.gpuTemp; s.sysPower = t.sysPower
+            }
+        }
+        s.at = Date()
+        lock.lock(); cache = s; lock.unlock()
+        return s
+    }
+
+    /// 面板上的那一行。三种降级层次，永远有内容可读：
+    ///   1. 有 macmon 且拿到温度 → `CPU 46.6°C · GPU 46.8°C · 12.3 W · nominal`
+    ///   2. 没拿到温度（macmon 未装/传感器读不到）→ `thermal: nominal`（原生档位，零成本）
+    ///   3. pmset 记录过热告警 → 追加告警内容（正常情况下它没有内容，不占位）
+    /// 采样年龄超过 3 倍节流窗口时标注 (stale Ns)：宁可标明数据旧了，
+    /// 也不要让用户把一个陈旧读数当实时值看。
+    static func menuLine() -> String {
+        let state = thermalStateName
+        guard let s = current else { return "thermal: \(state)" }
+
+        var parts: [String] = []
+        if s.hasTemps {
+            if s.cpuTemp > 0 { parts.append(String(format: "CPU %.1f°C", s.cpuTemp)) }
+            if s.gpuTemp > 0 { parts.append(String(format: "GPU %.1f°C", s.gpuTemp)) }
+            if s.sysPower > 0 { parts.append(String(format: "%.1f W", s.sysPower)) }
+        } else {
+            parts.append("thermal: \(state)")
+        }
+        if s.hasTemps, state != "nominal" { parts.append("⚠️ \(state)") }
+
+        var line = parts.joined(separator: " · ")
+        let a = Date().timeIntervalSince(s.at)
+        if a > minInterval * 3 { line += String(format: " (stale %.0fs)", a) }
+        if let w = s.pmset { line += " · pmset: \(w)" }
+        return line
+    }
+}
+// ==== THERMAL-END ====
+
 /// 当前选中的推理引擎。和 activePort 一样是运行期状态：
 /// App 启动和 CLI 入口统一先 syncEngine(cfg.engine)，让下面所有静态方法
 /// （二进制路径 / 参数探测 / 健康检查端点）都作用于正确的引擎。
@@ -309,6 +491,7 @@ private let kSSTOP: UInt32 = 4
 /// 标记需要原地更新的菜单行（见 updateOpenMenuValues）
 private let kKpiSpeed = "kpi:speed"
 private let kKpiTtft  = "kpi:ttft"
+private let kKpiThermal = "kpi:thermal"
 
 private func homeURL() -> URL { FileManager.default.homeDirectoryForCurrentUser }
 
@@ -1401,6 +1584,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // 按钮标题每秒都重算一次：空闲时轮询降到 5 秒，若只靠 refresh() 更新，
         // "忙完 2 秒隐藏"会被拖成最多 5 秒才生效。只改标题，代价可忽略。
         applyStatusButton()
+        // 热状态自带 5 秒节流与"已在飞就跳过"，所以每秒调一次也不会堆叠子进程
+        Thermal.tick()
+        // 展开中的菜单要实时反映新温度，不能等 refresh()（空闲时 5 秒一次）
+        updateThermalMenuItem()
         let interval: TimeInterval = busy ? 1.0 : 5.0
         guard now.timeIntervalSince(lastPollAt) >= interval else { return }
         lastPollAt = now
@@ -1478,6 +1665,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             it.representedObject = kKpiTtft
             menu.addItem(it)
         }
+        // 热状态是**机器级**指标，不依赖服务是否在跑，所以始终显示。
+        // 实测 macmon 单次采样 251–352ms，绝不能在主线程调 —— Thermal.tick()
+        // 在后台采样并缓存，这里只读缓存（零成本）。
+        let th = disabled(Thermal.menuLine())
+        th.representedObject = kKpiThermal
+        menu.addItem(th)
         if let r = runVer, let i = instVer, r != i {
             menu.addItem(disabled("⚠️ running \(r) ≠ installed \(i) — restart to switch"))
         }
@@ -1810,8 +2003,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             switch it.representedObject as? String {
             case kKpiSpeed: it.title = speedLineText()
             case kKpiTtft:  it.title = ttftLineText() ?? it.title
+            case kKpiThermal: it.title = Thermal.menuLine()
             default: break
             }
+        }
+    }
+
+    /// 温度行单独每秒刷一次：Thermal 的采样是后台异步的（5 秒节流），
+    /// 等 refresh()（空闲时 5 秒一次）才更新会让展开的菜单多等最多 5 秒。
+    /// 只改一行 title，代价可忽略；不动 speed/TTFT 的既有更新语义。
+    private func updateThermalMenuItem() {
+        guard let menu = statusItem?.menu else { return }
+        for it in menu.items where (it.representedObject as? String) == kKpiThermal {
+            it.title = Thermal.menuLine()
+            return
         }
     }
 
@@ -2653,7 +2858,7 @@ func runCLI(_ argv: [String]) -> Bool {
     switch cmd {
     case "--start", "--stop", "--restart", "--status", "--states", "--takeover",
          "--pause", "--resume", "--login-on", "--login-off", "--dump-menu", "--version-of",
-         "--engine-flags", "--models", "--rate":
+         "--engine-flags", "--models", "--rate", "--thermal", "--thermal-watch":
         break
     case "--help", "-h":
         print("""
@@ -2673,6 +2878,7 @@ func runCLI(_ argv: [String]) -> Bool {
           Splash-MLX --version-of <path>  Run the version parser against an executable path (debug)
           Splash-MLX --engine-flags  List the serve flags this engine accepts, and which get filtered (debug)
           Splash-MLX --models     List locally available Splash packages as the Model submenu sees them (debug)
+          Splash-MLX --thermal    Sample machine temperature synchronously and report each data source (debug)
         """)
         return true
     default:
@@ -2885,6 +3091,47 @@ func runCLI(_ argv: [String]) -> Bool {
         // 调试验证用：把一条可执行文件路径喂给版本解析逻辑
         guard argv.count >= 3 else { print("usage: --version-of <path>"); return true }
         print(Service.versionFromPath(argv[2]) ?? "(unrecognized)")
+    case "--thermal":
+        // 调试验证用：同步采一次热状态，逐项报告数据来源与可用性
+        let start = Date()
+        let s = Thermal.sampleSync()
+        let ms = Date().timeIntervalSince(start) * 1000
+        print(String(format: "采样耗时: %.0f ms", ms))
+        print("macmon:  \(kMacmonBinResolved ?? "(未找到 — 面板将只显示原生 thermalState)")")
+        print("原生档位: \(Thermal.thermalStateName)")
+        if let s {
+            if s.hasTemps {
+                print(String(format: "CPU: %.1f °C", s.cpuTemp))
+                print(String(format: "GPU: %.1f °C", s.gpuTemp))
+                print(String(format: "整机功耗: %.2f W", s.sysPower))
+            } else {
+                print("温度: (macmon 未返回有效值)")
+            }
+            print("pmset 告警: \(s.pmset ?? "(无 — Apple Silicon 正常状态)")")
+        }
+        print("面板行: \(Thermal.menuLine())")
+    case "--thermal-watch":
+        // 调试验证用：跑 GUI 真正走的那条**异步**链路（Timer → Thermal.tick() →
+        // 后台采样 → cache → menuLine 读缓存），而不是 --thermal 的同步路径。
+        // --dump-menu 一次性构建、不跑 Timer，所以只有这里能证明面板会真的填上温度。
+        print("观察 \(argv.count >= 3 ? argv[2] : "12") 秒内异步采样的填充过程…")
+        let secs = Double(argv.count >= 3 ? argv[2] : "12") ?? 12
+        let t0 = Date()
+        let deadline = t0.addingTimeInterval(secs)
+        var n = 0
+        while Date() < deadline {
+            Thermal.tick()                       // 与 GUI 的 tick() 同一个入口
+            if let s = Thermal.current {
+                n += 1
+                print(String(format: "  t=%4.1fs  hasTemps=%@  面板行: %@",
+                             Date().timeIntervalSince(t0), s.hasTemps ? "yes" : "no",
+                             Thermal.menuLine()))
+            } else {
+                print(String(format: "  t=%4.1fs  (缓存仍为空)", Date().timeIntervalSince(t0)))
+            }
+            Thread.sleep(forTimeInterval: 1.0)
+        }
+        print("最终面板行: \(Thermal.menuLine())")
     case "--resume":
         print(Service.resume())
     case "--login-on":
