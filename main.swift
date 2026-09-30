@@ -156,6 +156,28 @@ struct ThermalSample {
 /// PATH 里没有 /opt/homebrew/bin，写死会「明明装了却说没有」。找不到则为 nil，上层降级。
 private let kMacmonBinResolved: String? = resolveEngineBinary("macmon", envOverride: "MACMON_BIN")
 
+/// 温度分档与配色。阈值按本机实测基线校准：空闲 42–45°C、加载 100 GB 模型时 50°C，
+/// 所以 60°C 起算"偏高"、80°C 起算"过热"（Apple Silicon 的降频阈值在 100°C 上下，
+/// 到 80°C 已经值得提醒用户）。
+///
+/// 用 systemGreen/Orange/Red 这类**动态语义色**而非写死十六进制：
+/// 它们在深色/浅色模式下各自保证对比度，写死的绿色在深色菜单上会看不清。
+enum ThermalLevel {
+    case cool, warm, hot
+    static func of(_ t: Double) -> ThermalLevel {
+        if t >= 80 { return .hot }
+        if t >= 60 { return .warm }
+        return .cool
+    }
+    var color: NSColor {
+        switch self {
+        case .cool: return .systemGreen
+        case .warm: return .systemOrange
+        case .hot:  return .systemRed
+        }
+    }
+}
+
 enum Thermal {
     /// 采样节流：温度变化很慢（实测 3 秒才动 1°C），5 秒足够，
     /// 也避免每 5 秒白 spawn 一个 250ms 的进程。
@@ -165,6 +187,27 @@ enum Thermal {
     private static var lastSampleAt = Date.distantPast
     private static var inflight = false
     private static let lock = NSLock()
+    /// macmon 路径解析结果的缓存：`nil` = 还没在后台解析过，`.some(nil)` = 解析过但确实没装。
+    ///
+    /// **为什么必须有这层缓存**：`kMacmonBinResolved` 的首次惰性初始化会 spawn
+    /// `brew --prefix` + `macmon --version`（实测约 180ms）。菜单渲染在主线程，
+    /// 直接访问它会让菜单第一秒明显卡顿 —— 所以解析只在后台 tick() 里做，主线程只读缓存。
+    /// 解析完成前 `macmonResolved` 为 false，面板先显示中性文案，1 秒内自动补上真实状态。
+    private static var resolvedBin: String?? = nil
+
+    /// 是否已完成 macmon 探测。用它区分"还没探测"与"探测过、确实没装"，
+    /// 否则装了 macmon 的机器会在第一秒被误判成"未安装"而闪出安装指引。
+    static var macmonResolved: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return resolvedBin != nil
+    }
+
+    /// macmon 是否可用（主线程安全，只读缓存）
+    static var macmonAvailable: Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let r = resolvedBin else { return false }
+        return r != nil
+    }
 
     /// 最近一次成功的采样（可能为 nil：还没采到 / macmon 不可用）
     static var current: ThermalSample? {
@@ -197,7 +240,8 @@ enum Thermal {
         DispatchQueue.global(qos: .utility).async {
             var s = ThermalSample()
             s.pmset = pmsetWarning()
-            if let bin = kMacmonBinResolved {
+            let bin = kMacmonBinResolved          // 首次访问的 ~180ms 开销发生在这里（后台）
+            if let bin {
                 // -i 100 是最短采样窗口（实测 251ms），-s 1 表示只出一行就退出
                 let r = run(bin, ["pipe", "-i", "100", "-s", "1"])
                 if r.status == 0, let t = parse(r.out) {
@@ -206,6 +250,7 @@ enum Thermal {
             }
             s.at = Date()
             lock.lock()
+            resolvedBin = .some(bin)              // 记录探测结果，主线程据此决定是否提示安装
             cache = s
             inflight = false
             lock.unlock()
@@ -263,14 +308,15 @@ enum Thermal {
     static func sampleSync() -> ThermalSample? {
         var s = ThermalSample()
         s.pmset = pmsetWarning()
-        if let bin = kMacmonBinResolved {
+        let bin = kMacmonBinResolved
+        if let bin {
             let r = run(bin, ["pipe", "-i", "100", "-s", "1"])
             if r.status == 0, let t = parse(r.out) {
                 s.cpuTemp = t.cpuTemp; s.gpuTemp = t.gpuTemp; s.sysPower = t.sysPower
             }
         }
         s.at = Date()
-        lock.lock(); cache = s; lock.unlock()
+        lock.lock(); resolvedBin = .some(bin); cache = s; lock.unlock()
         return s
     }
 
@@ -299,6 +345,74 @@ enum Thermal {
         if a > minInterval * 3 { line += String(format: " (stale %.0fs)", a) }
         if let w = s.pmset { line += " · pmset: \(w)" }
         return line
+    }
+
+    /// 面板上的**富文本**版本：温度按分档上色，功耗/分隔符用次级色，形成视觉层次。
+    ///
+    /// 遵守 WCAG 1.4.1（不得仅用颜色传达信息）：颜色永远伴随 °C 数值本身，
+    /// 热压力档位也始终以 nominal/serious 等**文字**出现，色觉障碍用户读数字即可。
+    static func menuAttributedLine() -> NSAttributedString {
+        let out = NSMutableAttributedString()
+        let mono = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        let dim: [NSAttributedString.Key: Any] = [
+            .font: mono, .foregroundColor: NSColor.tertiaryLabelColor]
+        let normal: [NSAttributedString.Key: Any] = [
+            .font: mono, .foregroundColor: NSColor.labelColor]
+
+        func seg(_ t: String, _ attrs: [NSAttributedString.Key: Any]) {
+            out.append(NSAttributedString(string: t, attributes: attrs))
+        }
+
+        let state = thermalStateName
+        guard let s = current else {
+            // 还没采到：原生档位是零成本的，先给中性可读的一行
+            seg("thermal: ", dim)
+            seg(state, normal)
+            return out
+        }
+
+        if s.hasTemps {
+            if s.cpuTemp > 0 {
+                seg("CPU ", dim)
+                seg(String(format: "%.1f°C", s.cpuTemp),
+                    [.font: mono, .foregroundColor: ThermalLevel.of(s.cpuTemp).color])
+            }
+            if s.gpuTemp > 0 {
+                if s.cpuTemp > 0 { seg(" · ", dim) }
+                seg("GPU ", dim)
+                seg(String(format: "%.1f°C", s.gpuTemp),
+                    [.font: mono, .foregroundColor: ThermalLevel.of(s.gpuTemp).color])
+            }
+            if s.sysPower > 0 {
+                seg(" · ", dim)
+                seg(String(format: "%.1f W", s.sysPower), normal)
+            }
+            // 档位异常时才追加告警（nominal 是常态，不必占位）
+            if state != "nominal" {
+                seg("  ", dim)
+                seg("⚠ \(state)", [.font: mono, .foregroundColor: NSColor.systemOrange,
+                                    .underlineStyle: NSUnderlineStyle.single.rawValue])
+            }
+        } else {
+            seg("thermal: ", dim)
+            seg(state, [.font: mono, .foregroundColor: NSColor.secondaryLabelColor])
+        }
+
+        let a = Date().timeIntervalSince(s.at)
+        if a > minInterval * 3 { seg(String(format: " (stale %.0fs)", a), dim) }
+        if let w = s.pmset {
+            seg(" · ", dim)
+            seg("pmset: \(w)", [.font: mono, .foregroundColor: NSColor.systemRed])
+        }
+        return out
+    }
+
+    /// 未装 macmon 时的引导文案。区分"还没探测完"与"探测过确实没装"：
+    /// 前者给中性提示（1 秒内会被真实状态替换），后者明确给出安装命令。
+    static var installHintLine: String? {
+        guard macmonResolved else { return nil }      // 探测未完成 → 不提示，避免误报
+        guard !macmonAvailable else { return nil }    // 已装 → 不提示
+        return "brew install macmon"
     }
 }
 // ==== THERMAL-END ====
@@ -1650,7 +1764,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // ── 状态区：压到 4 行以内（原来是 7 行）
         let runVer = Service.runningVersion()
         let instVer = Service.installedVersion()
-        menu.addItem(disabled("\(activeEngine.displayName) \(runVer ?? instVer ?? "?")  ·  \(stateLabel())"))
+        menu.addItem(richInfo(stateAttributedLine()))
         // 两个引擎的 KPI 不是一套：Splash 报草稿接受率，mlx-serve 没有（它的推测解码统计
         // 只进日志 [spec-stats]），但 mlx-serve 有 GPU 负载。所以按引擎分别渲染，
         // 不能共用一行——否则会显示一堆恒为 0 的假数字。
@@ -1668,9 +1782,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // 热状态是**机器级**指标，不依赖服务是否在跑，所以始终显示。
         // 实测 macmon 单次采样 251–352ms，绝不能在主线程调 —— Thermal.tick()
         // 在后台采样并缓存，这里只读缓存（零成本）。
-        let th = disabled(Thermal.menuLine())
+        let th = richInfo(Thermal.menuAttributedLine())
         th.representedObject = kKpiThermal
         menu.addItem(th)
+        // 没装 macmon 时给一行**可点击**的安装指引，而不是静默降级 ——
+        // 否则用户只看到 "thermal: nominal"，不知道还能有真实温度、也不知道怎么开。
+        // installHintLine 内部区分"探测未完成"与"确实没装"，不会在第一秒误报。
+        if let hint = Thermal.installHintLine {
+            let install = NSMenuItem(title: "  ↳ 装 macmon 看真实温度：\(hint)",
+                                     action: #selector(showMacmonInstallGuide), keyEquivalent: "")
+            install.target = self
+            install.tag = kInfoTag        // 仍是信息行，但可点，所以不打 isEnabled=false
+            install.attributedTitle = NSAttributedString(string: install.title, attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                .foregroundColor: NSColor.linkColor])
+            menu.addItem(install)
+        }
         if let r = runVer, let i = instVer, r != i {
             menu.addItem(disabled("⚠️ running \(r) ≠ installed \(i) — restart to switch"))
         }
@@ -1781,6 +1908,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if st.up { return Service.managed ? "running (managed)" : "running (external)" }
         if Service.managed || starting { return "starting (waiting for model)" }
         return "stopped"
+    }
+
+    /// 状态圆点颜色。与菜单栏图标的三态配色同源（绿=在跑、琥珀=过渡、灰=停），
+    /// 让图标与面板文字不会各说一套。
+    private func stateDotColor() -> NSColor {
+        if Service.paused { return .systemOrange }
+        if st.up { return .systemGreen }
+        if Service.managed || starting { return .systemOrange }
+        return .tertiaryLabelColor
+    }
+
+    /// 带富文本的信息行。菜单 `autoenablesItems = false`，所以 isEnabled=false 只是
+    /// 「不可点」，不会强制把颜色改成系统灰 —— 自定义配色能保留。
+    /// 打 kInfoTag 让 --dump-menu 与分组标题一样跳过。
+    private func richInfo(_ attributed: NSAttributedString) -> NSMenuItem {
+        let it = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        it.isEnabled = false
+        it.tag = kInfoTag
+        it.attributedTitle = attributed
+        return it
+    }
+
+    /// 状态行的富文本：● + 状态（按档位上色）+ 引擎与版本（次级色）。
+    /// 圆点只是辅助，状态文字始终存在 —— 不违反「仅用颜色传达信息」。
+    private func stateAttributedLine() -> NSAttributedString {
+        let out = NSMutableAttributedString()
+        let sys = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let dotAttrs: [NSAttributedString.Key: Any] = [
+            .font: sys, .foregroundColor: stateDotColor()]
+        out.append(NSAttributedString(string: "● ", attributes: dotAttrs))
+
+        let label = stateLabel()
+        // 状态文字本身也按档位上色（绿/橙/灰），但异常态额外加下划线做第二通道
+        let stateColor: NSColor = st.up ? .systemGreen
+            : (Service.paused || starting ? .systemOrange : .secondaryLabelColor)
+        out.append(NSAttributedString(string: label, attributes: [
+            .font: NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .medium),
+            .foregroundColor: stateColor]))
+
+        let ver = runVersionForStatusLine()
+        out.append(NSAttributedString(string: "  \(activeEngine.displayName) \(ver)", attributes: [
+            .font: sys, .foregroundColor: NSColor.tertiaryLabelColor]))
+        return out
+    }
+
+    /// 状态行用的版本号：跑着就显示实际在跑的版本，否则显示已安装版本。
+    private func runVersionForStatusLine() -> String {
+        Service.runningVersion() ?? Service.installedVersion() ?? "?"
     }
 
     /// 从 App 包 Resources 里按 @3x → @2x → 1x 顺序取菜单栏图标
@@ -2003,7 +2178,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             switch it.representedObject as? String {
             case kKpiSpeed: it.title = speedLineText()
             case kKpiTtft:  it.title = ttftLineText() ?? it.title
-            case kKpiThermal: it.title = Thermal.menuLine()
+            // 必须改 attributedTitle：设 title 会把富文本覆盖掉，
+            // 展开中的菜单一刷新就退回纯文本、丢掉温度分档配色。
+            case kKpiThermal: it.attributedTitle = Thermal.menuAttributedLine()
             default: break
             }
         }
@@ -2011,11 +2188,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     /// 温度行单独每秒刷一次：Thermal 的采样是后台异步的（5 秒节流），
     /// 等 refresh()（空闲时 5 秒一次）才更新会让展开的菜单多等最多 5 秒。
-    /// 只改一行 title，代价可忽略；不动 speed/TTFT 的既有更新语义。
+    /// 只改一行 attributedTitle，代价可忽略；不动 speed/TTFT 的既有更新语义。
     private func updateThermalMenuItem() {
         guard let menu = statusItem?.menu else { return }
         for it in menu.items where (it.representedObject as? String) == kKpiThermal {
-            it.title = Thermal.menuLine()
+            it.attributedTitle = Thermal.menuAttributedLine()
             return
         }
     }
@@ -2756,6 +2933,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc func openModelDir()  { NSWorkspace.shared.open(engineModelsDir) }
     @objc func openConfigDir() { NSWorkspace.shared.open(appSupportDir) }
 
+    /// 没装 macmon 时的安装指引。面板那行只是入口，这里说清三件事：
+    /// 为什么需要它（Apple Silicon 上 pmset/powermetrics 都给不出 °C）、
+    /// 装它得到什么（CPU/GPU 真实摄氏度 + 功耗）、怎么装（一条 brew 命令，可复制）。
+    ///
+    /// 不代跑安装：brew install 要联网且可能触发权限提示，静默替用户装第三方工具不合适，
+    /// 给命令 + 复制按钮把决定权留给用户。
+    @objc func showMacmonInstallGuide() {
+        let cmd = "brew install macmon"
+        let a = NSAlert()
+        a.messageText = "需要 macmon 才能显示真实温度"
+        a.informativeText = """
+        Apple Silicon 上系统自带的工具拿不到摄氏度：
+        · pmset -g therm 只报热告警，平时没有任何数值
+        · powermetrics 没有 smc 采样器，且需要 root
+
+        macmon 通过 IOHID 传感器读取，免 sudo，装上后面板会显示
+        CPU/GPU 真实温度与整机功耗。
+
+        安装命令：
+        \(cmd)
+
+        装完后无需重启 Splash-MLX，最多等 5 秒（下一次采样）即可生效。
+        未安装时温度行仍会显示系统热压力档位（nominal/fair/serious/critical）。
+        """
+        a.alertStyle = .informational
+        a.addButton(withTitle: "Copy command")
+        a.addButton(withTitle: "Close")
+        NSApp.activate(ignoringOtherApps: true)
+        if a.runModal() == .alertFirstButtonReturn {
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(cmd, forType: .string)
+        }
+    }
+
     @objc func showAbout() {
         // 版本号只认 Info.plist，避免两处各写一份对不上
         let appVer = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
@@ -2858,7 +3070,7 @@ func runCLI(_ argv: [String]) -> Bool {
     switch cmd {
     case "--start", "--stop", "--restart", "--status", "--states", "--takeover",
          "--pause", "--resume", "--login-on", "--login-off", "--dump-menu", "--version-of",
-         "--engine-flags", "--models", "--rate", "--thermal", "--thermal-watch":
+         "--engine-flags", "--models", "--rate", "--thermal", "--thermal-watch", "--thermal-attrs":
         break
     case "--help", "-h":
         print("""
@@ -3132,6 +3344,35 @@ func runCLI(_ argv: [String]) -> Bool {
             Thread.sleep(forTimeInterval: 1.0)
         }
         print("最终面板行: \(Thermal.menuLine())")
+    case "--thermal-attrs":
+        // 调试验证用：把温度行富文本的**每段颜色**打出来。
+        // 数据层可客观验证；渲染层（AppKit 是否对 disabled 项减淡）需肉眼确认。
+        let s = Thermal.sampleSync()
+        let attr = Thermal.menuAttributedLine()
+        print("采样: \(s?.hasTemps == true ? "有温度" : "无温度（降级路径）")")
+        print("macmon: \(Thermal.macmonAvailable ? "已安装" : "未安装")")
+        print("installHintLine: \(Thermal.installHintLine ?? "nil（不该提示）")")
+        print()
+        print("富文本分段（共 \(attr.length) 字符）:")
+        var idx = 0
+        while idx < attr.length {
+            var range = NSRange(location: idx, length: 0)
+            let a = attr.attributes(at: idx, effectiveRange: &range)
+            let text = (attr.string as NSString).substring(with: range)
+            let colorDesc: String
+            if let c = a[.foregroundColor] as? NSColor {
+                // 转成 sRGB 十六进制，便于核对是否真是语义色而非系统灰
+                let rgb = c.usingColorSpace(.sRGB)
+                if let rgb {
+                    colorDesc = String(format: "#%02X%02X%02X a=%.2f (%@)",
+                        Int(rgb.redComponent*255), Int(rgb.greenComponent*255), Int(rgb.blueComponent*255),
+                        rgb.alphaComponent,
+                        c.description.split(separator: " ").first.map(String.init) ?? "?")
+                } else { colorDesc = c.description }
+            } else { colorDesc = "(继承/默认)" }
+            print(String(format: "  [%2d..%2d] %-22@ → %@", range.location, range.location+range.length, text as NSString, colorDesc as NSString))
+            idx = range.location + range.length
+        }
     case "--resume":
         print(Service.resume())
     case "--login-on":
