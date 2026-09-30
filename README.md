@@ -27,6 +27,31 @@ Click the icon and a menu pops up. The menu changes to match whichever engine yo
 While it runs you can watch how fast it is going, how much memory it is using, and the address to
 point your apps at.
 
+The menu also shows how hot the machine is — CPU and GPU temperature, colour-coded green / orange /
+red as it climbs, next to total power draw. That row works whether or not a model is running, since
+it is about the Mac, not the engine. See [Temperatures](#temperatures) for the optional dependency.
+
+## Temperatures
+
+Apple silicon does not hand out temperatures through the usual commands:
+
+- `pmset -g therm` reports only thermal *warnings*, and normally prints nothing at all
+- `powermetrics` has no `smc` sampler on recent macOS, and refuses to run without root
+
+So Splash-MLX reads the IOHID temperature sensors instead, via **[macmon](https://github.com/vladkens/macmon)** —
+a sudoless monitor for Apple silicon. It is an optional dependency:
+
+```bash
+brew install macmon
+```
+
+With macmon installed you get real degrees Celsius. Without it the row falls back to the system
+thermal state (`nominal` / `fair` / `serious` / `critical`), which is always available and needs no
+extra tool, and the menu offers a clickable hint with the install command. Nothing else is affected.
+
+Splash-MLX never installs macmon for you — that is your call. After installing it, the temperature
+shows up within five seconds; no restart needed.
+
 ## Install
 
 ```bash
