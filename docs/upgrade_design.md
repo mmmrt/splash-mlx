@@ -424,7 +424,7 @@ else if !defaultReasoningEffort.isEmpty { 传 --default-reasoning-effort }
 | **128 GB** | **Also GLM-5.3-Flash and DeepSeek-V4.1-Flash, their experts streamed from the SSD** |
 | 256 GB | Also GLM-5.3-Flash in memory (NVIDIA's FP4 pack) |
 
-**Splash 侧支持范围**（`install/families.py` `FAMILIES`，源码权威）：仅 **5 个家族** —— `Qwen3.8-27B`、`Qwen3.6-35B-A3B`、`Qwen3.5-122B-A10B`（含 Ornith-1.5-122B）、`Qwen3.8-Flash-Next`、`Flint`（`vision=False`）。
+**Splash 侧支持范围**（`install/families.py` `FAMILIES`，源码权威）：**1.7.1 为 5 族；1.7.2 实装 6 族**（本机 `/opt/homebrew/Cellar/splash/1.7.2/libexec/install/families.py` 核验）—— `Qwen3.8-27B`、`Qwen3.6-35B-A3B`、`Qwen3.5-122B-A10B`（含 Ornith-1.5-122B）、`Qwen3.8-Flash-Next`、`Flint`（`vision=False`）、**`Inkling-2-Mini`（1.7.2 新增，`vision=False`）**。官方 `suggested-models.tsv` 另列 `prism-ml/Ternary-Bonsai-2-27B-gguf:PQ2_0`（24 GB 档最小下载）。
 > **Splash 不支持 DeepSeek / GLM**。`docs/models.md`："a model of no family Splash serves is told so whatever its tower"。→ **DeepSeek-V4.1 与 GLM-5.3-Flash 只能走 mlx-serve**。
 
 ## 3.1 一线推荐（128 GB 可部署，已核实）
