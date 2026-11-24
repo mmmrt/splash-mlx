@@ -529,6 +529,27 @@ private let kTagPersistentCache = 41
 private let kTagCacheDir       = 42
 private let kTagOffline        = 43
 private let kTagAllowIdleSleep = 44
+/// Splash 1.3.x–1.7.1 新增（tag 从 65 起 —— 既有最大 59，60–64 预留，全局不重号；
+/// 99 已被 kInfoTag 占用，分配时跳过）。外露仅 3 项（原则 D），其余为"隐藏"项：
+/// 不进菜单，但 tag/门控/字段/拼装全保留，手改 config.json 仍生效（原则 A）。
+private let kTagSplashDisableAne       = 65   // --disable-ane（外露，ANE 反向开关）
+private let kTagSplashMaxConcurrent    = 66   // --max-concurrent-requests（外露）
+private let kTagSplashThinkingBudget   = 67   // --thinking-token-budget（外露）
+private let kTagSplashRecalibrateAne   = 69   // --recalibrate-ane（隐藏，与 --disable-ane 互斥）
+private let kTagSplashActivations      = 70   // --activations（隐藏，M5 上 auto 即最优）
+private let kTagSplashVerifyRows       = 71   // --verify-rows（隐藏）
+private let kTagSplashExpertMemory     = 72   // --expert-memory（隐藏，1.6.0 起 auto 为弹性）
+private let kTagSplashPleMemory        = 73   // --ple-memory（隐藏）
+private let kTagSplashSparseKvMemory   = 74   // --sparse-kv-memory（隐藏）
+private let kTagSplashStateFormat      = 75   // --state-format（隐藏）
+private let kTagSplashCachedStates     = 76   // --cached-states（隐藏）
+private let kTagSplashMaxCacheWrites   = 77   // --max-cache-disk-writes（隐藏）
+private let kTagSplashForcedEffort     = 78   // --reasoning-effort（隐藏，与 --default-reasoning-effort 互斥）
+private let kTagSplashThinkingEndText  = 79   // --thinking-end-text（隐藏）
+private let kTagSplashSamplingDefault  = 80   // --sampling-default（隐藏）
+private let kTagSplashChatTemplateFile = 81   // --chat-template-file（隐藏）
+private let kTagSplashMmproj           = 82   // --mmproj（隐藏，依赖 --model-dir）
+private let kTagSplashServeModelDir    = 104  // --model-dir（隐藏，P2 不外露；与"模型发现目录"modelDirSplash 语义不同）
 
 /// 受引擎能力约束的参数：tag → 引擎上对应的长选项。
 ///
@@ -569,6 +590,26 @@ private let kGatedParams: [(tag: Int, flag: String)] = [
     (kTagCacheDir,        "--cache-dir"),
     (kTagOffline,         "--offline"),
     (kTagAllowIdleSleep,  "--allow-idle-sleep"),
+    // Splash 1.3.x–1.7.1 新增：外露 3 项 + 隐藏项全部登记（隐藏 ≠ 删门控，
+    // 手改 config.json 的值仍要走同一套 flagAvailable 过滤）。
+    (kTagSplashDisableAne,       "--disable-ane"),
+    (kTagSplashMaxConcurrent,    "--max-concurrent-requests"),
+    (kTagSplashThinkingBudget,   "--thinking-token-budget"),
+    (kTagSplashRecalibrateAne,   "--recalibrate-ane"),
+    (kTagSplashActivations,      "--activations"),
+    (kTagSplashVerifyRows,       "--verify-rows"),
+    (kTagSplashExpertMemory,     "--expert-memory"),
+    (kTagSplashPleMemory,        "--ple-memory"),
+    (kTagSplashSparseKvMemory,   "--sparse-kv-memory"),
+    (kTagSplashStateFormat,      "--state-format"),
+    (kTagSplashCachedStates,     "--cached-states"),
+    (kTagSplashMaxCacheWrites,   "--max-cache-disk-writes"),
+    (kTagSplashForcedEffort,     "--reasoning-effort"),
+    (kTagSplashThinkingEndText,  "--thinking-end-text"),
+    (kTagSplashSamplingDefault,  "--sampling-default"),
+    (kTagSplashChatTemplateFile, "--chat-template-file"),
+    (kTagSplashMmproj,           "--mmproj"),
+    (kTagSplashServeModelDir,    "--model-dir"),
 ]
 
 /// mlx-serve 专属参数。tag 从 11 起编号，和 Splash 的 1–8 严格分开，
@@ -605,6 +646,31 @@ private let kTagMlxOsReserveGib    = 57
 private let kTagMlxDspark          = 58
 /// API Key 项在能力表里的投影：菜单是否给出"env 注入"这一档，取决于引擎认不认识 --api-key-env
 private let kTagMlxApiKeyEnv       = 59
+/// mlx-serve 26.11.x 新增（tag 接 Splash 新块从 68 起；99 已被 kInfoTag 占用，跳过）。
+/// 外露仅 --no-plugins（插件排障开关），其余为"隐藏"项：不进菜单，
+/// 但 tag/门控/字段/拼装全保留，手改 config.json 仍生效（原则 A）。
+private let kTagMlxNoPlugins         = 68   // --no-plugins（外露，26.11.3 插件排障）
+private let kTagMlxShutdownPersist   = 83   // --shutdown-persist-secs（隐藏；Service.stop 等待窗口跟随它）
+private let kTagMlxAne               = 84   // --ane（隐藏，整模型搬 ANE —— 与 Splash 的 FFN 拆分不是一回事）
+private let kTagMlxAneSlots          = 85   // --ane-slots（隐藏，依赖 --ane）
+private let kTagMlxInt8Qk            = 86   // --int8-qk（隐藏，有损；Flash-Next >2K 不走该路径）
+private let kTagMlxW8a8              = 87   // --w8a8 / --no-w8a8（隐藏，仅媒体模型，与文本 LLM 无关）
+private let kTagMlxLmHeadMxfp8       = 88   // --lm-head-mxfp8 / --no-…（隐藏，Mac 需显式 opt-in 且有损）
+private let kTagMlxMtpMinDepth       = 89   // --mtp-min-depth（隐藏，自适应下界）
+private let kTagMlxMtpMaxDepth       = 90   // --mtp-max-depth（隐藏，承接旧 --mtp-depth 的新拼写）
+private let kTagMlxDist              = 91   // --dist（隐藏，双机 Thunderbolt RDMA）
+private let kTagMlxDistModel         = 92   // --dist-model（隐藏）
+private let kTagMlxDistCoordinator   = 93   // --dist-coordinator（隐藏）
+private let kTagMlxDistDevice        = 94   // --dist-device（隐藏）
+private let kTagMlxDistSplit         = 95   // --dist-split（隐藏）
+private let kTagMlxNoPrefixCacheRam  = 96   // --no-prefix-cache-ram（隐藏）
+private let kTagMlxWarmupFull        = 97   // --warmup-full（隐藏，基准测试用）
+private let kTagMlxLlamaMtpDrafts    = 98   // --llama-mtp-drafts（隐藏，GGUF MTP 路径）
+// 99 = kInfoTag，跳过
+private let kTagMlxLlamaUbatch       = 100  // --llama-ubatch（隐藏，GGUF 精细调参）
+private let kTagMlxAblationProfiles  = 101  // --ablation-profiles（隐藏，须与 key-file 成对）
+private let kTagMlxAblationKeyFile   = 102  // --ablation-key-file（隐藏）
+private let kTagMlxWiredMarginGib    = 103  // --wired-margin-gib（隐藏，源码隐藏旋钮，非公开契约）
 
 /// mlx-serve 26.10.1 起支持 `--api-key-env <VAR>`：密钥从环境变量读，
 /// 不再出现在 argv 里（进程表全机可读，`--api-key` 传明文密钥等于挂在橱窗里）。
@@ -650,6 +716,29 @@ private let kMlxGatedParams: [(tag: Int, flag: String)] = [
     (kTagMlxOsReserveGib,    "--os-reserve-gib"),
     (kTagMlxDspark,          "--dspark"),
     (kTagMlxApiKeyEnv,       "--api-key-env"),
+    // mlx-serve 26.11.x 新增：外露 1 项 + 隐藏项全部登记（隐藏 ≠ 删门控）。
+    // --w8a8 / --lm-head-mxfp8 的负向拼写（--no-…）在 serveArguments 里单独 flagAvailable。
+    (kTagMlxNoPlugins,        "--no-plugins"),
+    (kTagMlxShutdownPersist,  "--shutdown-persist-secs"),
+    (kTagMlxAne,              "--ane"),
+    (kTagMlxAneSlots,         "--ane-slots"),
+    (kTagMlxInt8Qk,           "--int8-qk"),
+    (kTagMlxW8a8,             "--w8a8"),
+    (kTagMlxLmHeadMxfp8,      "--lm-head-mxfp8"),
+    (kTagMlxMtpMinDepth,      "--mtp-min-depth"),
+    (kTagMlxMtpMaxDepth,      "--mtp-max-depth"),
+    (kTagMlxDist,             "--dist"),
+    (kTagMlxDistModel,        "--dist-model"),
+    (kTagMlxDistCoordinator,  "--dist-coordinator"),
+    (kTagMlxDistDevice,       "--dist-device"),
+    (kTagMlxDistSplit,        "--dist-split"),
+    (kTagMlxNoPrefixCacheRam, "--no-prefix-cache-ram"),
+    (kTagMlxWarmupFull,       "--warmup-full"),
+    (kTagMlxLlamaMtpDrafts,   "--llama-mtp-drafts"),
+    (kTagMlxLlamaUbatch,      "--llama-ubatch"),
+    (kTagMlxAblationProfiles, "--ablation-profiles"),
+    (kTagMlxAblationKeyFile,  "--ablation-key-file"),
+    (kTagMlxWiredMarginGib,   "--wired-margin-gib"),
 ]
 
 private func flagForTag(_ tag: Int) -> String? {
@@ -660,14 +749,18 @@ private func flagForTag(_ tag: Int) -> String? {
 /// 没登记 = 不依赖模型部件（只受引擎能力门控）。
 private func capGateForTag(_ tag: Int) -> AppDelegate.ModelCapGate? {
     switch tag {
-    case kTagMlxMTP:    return .mtp
-    case kTagMlxVision: return .vision
-    default:            return nil
+    case kTagMlxMTP:           return .mtp
+    case kTagMlxVision:        return .vision
+    // Splash --disable-ane 的 needs="dense_ffn"：ANE FFN 拆分只对 dense 模型生效，
+    // MoE 包（专家权重）上整组置灰。探测不到包时 fail open（见 ModelCaps.denseFfn）。
+    case kTagSplashDisableAne: return .denseFfn
+    default:                   return nil
     }
 }
 // sys/proc.h: SIDL=1 SRUN=2 SSLEEP=3 SSTOP=4 SZOMB=5
 // 注意 SSTOP 是 4，写成 3(SSLEEP) 会导致暂停永远检测不到
 private let kSSTOP: UInt32 = 4
+private let kSZOMB: UInt32 = 5
 
 /// 标记需要原地更新的菜单行（见 updateOpenMenuValues）
 private let kKpiSpeed = "kpi:speed"
@@ -742,6 +835,11 @@ private var engineModelsDir: URL {
 struct ModelCaps {
     var mtp: Bool = false
     var vision: Bool = false
+    /// dense FFN（非 MoE）。Splash --disable-ane 的 needs="dense_ffn" 门控用。
+    /// 默认 true = fail open：包不在盘上/读不到 config 时不误置灰（与 flagAvailable
+    /// 的 fail-open 纪律一致）；只有**探测到 MoE 证据**（config 的专家数键 /
+    /// *.experts.* 张量）才判 false。GGUF 单文件无目录结构可探，同样 fail open。
+    var denseFfn: Bool = true
 }
 /// 按路径缓存：菜单每次展开都重建，不能每次重读几十 MB 的 index.json。
 private var modelCapsCache: [String: ModelCaps] = [:]
@@ -763,15 +861,21 @@ private func modelCaps(_ path: String) -> ModelCaps {
         for k in wm.keys {
             if !caps.mtp, k.hasPrefix("mtp.") || k.contains(".mtp.") { caps.mtp = true }
             if !caps.vision, k.contains(".visual.") || k.hasPrefix("vision_tower.") || k.contains(".vision_tower.") { caps.vision = true }
-            if caps.mtp && caps.vision { break }
+            // MoE 专家张量是 "非 dense" 的直接证据（各家族打包都带 .experts. 段）
+            if caps.denseFfn, k.contains(".experts.") || k.hasPrefix("experts.") { caps.denseFfn = false }
+            if caps.mtp && caps.vision && !caps.denseFfn { break }
         }
     }
-    // config.json 的 vision_config 是最后一道保险（纯文本模型不会有它）
-    if !caps.vision,
-       let data = try? Data(contentsOf: URL(fileURLWithPath: (path as NSString).appendingPathComponent("config.json"))),
-       let cfg = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-       cfg["vision_config"] != nil {
-        caps.vision = true
+    // config.json：vision_config 是视觉的最后一道保险（纯文本模型不会有它）；
+    // 专家数键（num_experts / num_local_experts / n_routed_experts）是 MoE 的另一路证据。
+    if let data = try? Data(contentsOf: URL(fileURLWithPath: (path as NSString).appendingPathComponent("config.json"))),
+       let cfg = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        if !caps.vision, cfg["vision_config"] != nil { caps.vision = true }
+        if caps.denseFfn {
+            for key in ["num_experts", "num_local_experts", "n_routed_experts"] {
+                if let n = num(cfg[key]), n > 0 { caps.denseFfn = false; break }
+            }
+        }
     }
 
     modelCapsCache[path] = caps
@@ -814,14 +918,22 @@ struct MLXConfig: Codable {
     var ctxSize: String = ""
     /// KV 缓存量化：off / 4 / 8
     var kvQuant: String = "off"
-    /// 前缀缓存落 SSD，如 "10GB"。留空=关闭
-    var prefixCacheDisk: String = ""
-    /// 前缀缓存的**内存层**字节预算。引擎默认只有 2GB —— 大内存机器加大能显著提高命中率
-    var prefixCacheMem: String = ""
-    /// 前缀缓存的 LRU 条数上限（引擎默认 32）。和上面那个是同一缓存的两个维度
+    /// 前缀缓存落 SSD，如 "10GB"。留空=关闭（引擎默认 off）。
+    /// 本机默认 32GB：75GB 级模型频繁重启，SSD 层让前缀跨重启存活
+    /// （官方实测 11K-token 重启 TTFT 5.9s → 0.7s），是本次升级最大的单点收益之一。
+    var prefixCacheDisk: String = "32GB"
+    /// 前缀缓存的**内存层**字节预算。引擎默认只有 2GB（hybrid/sliding-ring/qwen4_exp
+    /// 会自动抬到会话工作上下文若更大）—— 大内存机器显式加大能显著提高命中率。
+    /// 本机默认 16GB（用户实跑验证过的值）。
+    var prefixCacheMem: String = "16GB"
+    /// 前缀缓存的 LRU 条数上限（26.11.3 文档写 auto，具体算法待确认）。
+    /// 和上面那个是同一缓存的两个维度；字节预算已是主控，此项隐藏。
     var prefixCacheEntries: String = ""
-    var maxResidentModels: String = ""
-    /// 所有常驻模型的**总**内存上限。留空用引擎默认（wired limit 的 80%）
+    /// 常驻模型数上限（引擎默认 3）。本机默认 1：单个 Flash-Next 就 ~75GB，
+    /// 128GB 装不下第二个大模型，设 1 避免 LRU 反复驱逐/重载（每次重载数十秒）。
+    var maxResidentModels: String = "1"
+    /// 所有常驻模型的**总**内存上限。留空用引擎默认
+    /// （26.11.3 起 auto = GPU working-set limit；旧版是 wired limit 的 80%，语义已放宽）
     var maxResidentMem: String = ""
     var idleEvictSecs: String = ""
     var noVision: Bool = false
@@ -896,7 +1008,58 @@ struct MLXConfig: Codable {
     var osReserveGib: String = ""
     /// --dspark：DeepSeek-V4 的 DSpark 草稿级（默认关，常驻约 11GB）。
     /// 只对服务 DeepSeek-V4（含 ds4 引擎的 GGUF）有意义。
+    /// 26.11.3 起自带 stage 的包（如 Pruned192）默认就跑 DSpark，此 flag 主要面向旧包。
     var dspark: Bool = false
+
+    // ── mlx-serve 26.11.x 新增。仅 noPlugins 外露（插件排障开关）；
+    // 其余为"隐藏"项：不进菜单，但字段/门控/拼装保留，手改 config.json 仍生效
+    // （与 Splash 隐藏项同一纪律：隐藏 ≠ 删字段，init(from:) 逐字段回退必须保住）──
+    /// --no-plugins：本次运行不加载 ~/.mlx-serve/plugins/ 的外部插件（排障开关）。
+    /// 26.11.3 把 EXL3 等移为独立插件，插件问题需要显式关断口。
+    var noPlugins: Bool = false
+    /// --shutdown-persist-secs <n>：SIGTERM 后最多 n 秒写完 SSD 层未落盘 slice
+    /// （引擎默认 45；0=关闭）。留空=不传。Service.stop 的等待窗口跟随此值（单一真相）。
+    var shutdownPersistSecs: String = ""
+    /// --ane：整模型搬 ANE（仅 dense qwen3_5/Qwen3，≤64K，首次编译数分钟）。
+    /// 与 Splash 的 ANE FFN **拆分**是两种机制；本机 40 核 GPU 是强项，隐藏。
+    var ane: Bool = false
+    /// --ane-slots <n>：每个 ANE 模型的并发槽（1..4，共享权重、各自 KV）。依赖 --ane。
+    var aneSlots: String = ""
+    /// --int8-qk：有损 prefill 注意力量化（仅 NAX GPU；Flash-Next >2K 走稀疏注意力不经此路径）。
+    var int8Qk: Bool = false
+    /// --w8a8 / --no-w8a8 三态（""/"on"/"off"）：仅媒体模型（Image/video/music/3D），
+    /// 与文本 LLM 无关，隐藏。
+    var w8a8: String = ""
+    /// --lm-head-mxfp8 / --no-… 三态：有损 MXFP8 LM head；Mac 需显式 opt-in 且本机未实测。
+    var lmHeadMxfp8: String = ""
+    /// --mtp-min-depth <n>：自适应控制器下界（默认 1，抬高只会强迫无效草稿）。
+    var mtpMinDepth: String = ""
+    /// --mtp-max-depth <n>：旧 --mtp-depth 的新拼写（26.11.3，旧拼写降为 deprecated 别名）。
+    /// 老配置的 mtpDepth 在解码层迁移到这里；留空 = 引擎自适应（M5 NAX 上最多 8）。
+    var mtpMaxDepth: String = ""
+    /// --dist {pipeline|tensor}：双机 Thunderbolt 5 RDMA（需第二台 Mac，本机单台，隐藏）。
+    var dist: String = ""
+    /// --dist-model <path>：双机共同服务的模型（留空 = --model）。
+    var distModel: String = ""
+    /// --dist-coordinator <IP:PORT>：worker 拨入的本机地址。
+    var distCoordinator: String = ""
+    /// --dist-device <rdma_enX>：RDMA 端口。
+    var distDevice: String = ""
+    /// --dist-split <n>：pipeline 模式下本机保留的层数。
+    var distSplit: String = ""
+    /// --no-prefix-cache-ram：即使配了 SSD 也关掉前缀缓存 RAM 层（与本机大内存高命中策略相反）。
+    var noPrefixCacheRam: Bool = false
+    /// --warmup-full：就绪前编译全部 Metal kernel（基准测试用，首次加载变慢）。
+    var warmupFull: Bool = false
+    /// --llama-mtp-drafts <n>：GGUF 带 MTP 头时每轮草稿数（默认 2；0=off）。
+    var llamaMtpDrafts: String = ""
+    /// --llama-ubatch <n>：libllama ubatch（默认 512；1024–2048 prefill 更快但更吃 scratch）。
+    var llamaUbatch: String = ""
+    /// --ablation-profiles <dir> / --ablation-key-file <path>：定向消融（研究用，二者必须成对）。
+    var ablationProfiles: String = ""
+    var ablationKeyFile: String = ""
+    /// --wired-margin-gib <n>：wired 内存余量（2..32，源码隐藏旋钮，非公开契约）。
+    var wiredMarginGib: String = ""
 
     init() {}
 
@@ -948,6 +1111,31 @@ struct MLXConfig: Codable {
         skipMemPreflight  = (try? c.decode(Bool.self, forKey: .skipMemPreflight)) ?? skipMemPreflight
         osReserveGib      = (try? c.decode(String.self, forKey: .osReserveGib)) ?? osReserveGib
         dspark            = (try? c.decode(Bool.self, forKey: .dspark)) ?? dspark
+        // 26.11.x 新增字段：老配置缺键一律退回默认（= 不传新 flag，行为与升级前一致）
+        noPlugins         = (try? c.decode(Bool.self, forKey: .noPlugins)) ?? noPlugins
+        shutdownPersistSecs = (try? c.decode(String.self, forKey: .shutdownPersistSecs)) ?? shutdownPersistSecs
+        ane               = (try? c.decode(Bool.self, forKey: .ane)) ?? ane
+        aneSlots          = (try? c.decode(String.self, forKey: .aneSlots)) ?? aneSlots
+        int8Qk            = (try? c.decode(Bool.self, forKey: .int8Qk)) ?? int8Qk
+        w8a8              = (try? c.decode(String.self, forKey: .w8a8)) ?? w8a8
+        lmHeadMxfp8       = (try? c.decode(String.self, forKey: .lmHeadMxfp8)) ?? lmHeadMxfp8
+        mtpMinDepth       = (try? c.decode(String.self, forKey: .mtpMinDepth)) ?? mtpMinDepth
+        mtpMaxDepth       = (try? c.decode(String.self, forKey: .mtpMaxDepth)) ?? mtpMaxDepth
+        dist              = (try? c.decode(String.self, forKey: .dist)) ?? dist
+        distModel         = (try? c.decode(String.self, forKey: .distModel)) ?? distModel
+        distCoordinator   = (try? c.decode(String.self, forKey: .distCoordinator)) ?? distCoordinator
+        distDevice        = (try? c.decode(String.self, forKey: .distDevice)) ?? distDevice
+        distSplit         = (try? c.decode(String.self, forKey: .distSplit)) ?? distSplit
+        noPrefixCacheRam  = (try? c.decode(Bool.self, forKey: .noPrefixCacheRam)) ?? noPrefixCacheRam
+        warmupFull        = (try? c.decode(Bool.self, forKey: .warmupFull)) ?? warmupFull
+        llamaMtpDrafts    = (try? c.decode(String.self, forKey: .llamaMtpDrafts)) ?? llamaMtpDrafts
+        llamaUbatch       = (try? c.decode(String.self, forKey: .llamaUbatch)) ?? llamaUbatch
+        ablationProfiles  = (try? c.decode(String.self, forKey: .ablationProfiles)) ?? ablationProfiles
+        ablationKeyFile   = (try? c.decode(String.self, forKey: .ablationKeyFile)) ?? ablationKeyFile
+        wiredMarginGib    = (try? c.decode(String.self, forKey: .wiredMarginGib)) ?? wiredMarginGib
+        // 旧拼写迁移：--mtp-depth 在 26.11.3 改名 --mtp-max-depth（旧拼写仍收但告警）。
+        // 老配置只存了 mtpDepth：把值迁到新字段，拼装时优先新拼写、老引擎回退旧拼写。
+        if mtpMaxDepth.isEmpty, !mtpDepth.isEmpty { mtpMaxDepth = mtpDepth }
     }
 
     /// 已废弃、但老配置文件里仍可能出现的键。只用于**读**，绝不写回。
@@ -1033,7 +1221,15 @@ struct MLXConfig: Codable {
         // 老引擎不认识时静默降级为不传，服务照常起（与 Splash 1.1.0 四项同一套纪律）。
         if pleGpu, Service.flagAvailable("--ple-gpu") { a += ["--ple-gpu"] }
         if mtpGreedyTail, Service.flagAvailable("--mtp-greedy-tail") { a += ["--mtp-greedy-tail"] }
-        if !mtpDepth.isEmpty, Service.flagAvailable("--mtp-depth") { a += ["--mtp-depth", mtpDepth] }
+        // 26.11.3：--mtp-depth 改名 --mtp-max-depth（旧拼写降为 deprecated 别名，传了会告警）。
+        // 老配置的 mtpDepth 已在解码层迁到 mtpMaxDepth；优先新拼写，
+        // 老引擎不认识新 flag 时回退旧拼写（行为一致）。两者只传其一，绝不双传。
+        if !mtpMaxDepth.isEmpty {
+            if Service.flagAvailable("--mtp-max-depth") { a += ["--mtp-max-depth", mtpMaxDepth] }
+            else if Service.flagAvailable("--mtp-depth") { a += ["--mtp-depth", mtpMaxDepth] }
+        } else if !mtpDepth.isEmpty, Service.flagAvailable("--mtp-depth") {
+            a += ["--mtp-depth", mtpDepth]
+        }
         if !maxMtpCtx.isEmpty, Service.flagAvailable("--max-mtp-ctx") { a += ["--max-mtp-ctx", maxMtpCtx] }
         if noDecodeAttnQuant, Service.flagAvailable("--no-decode-attn-quant") { a += ["--no-decode-attn-quant"] }
         if !ggufEngine.isEmpty, Service.flagAvailable("--engine") { a += ["--engine", ggufEngine] }
@@ -1045,6 +1241,40 @@ struct MLXConfig: Codable {
         if skipMemPreflight, Service.flagAvailable("--skip-mem-preflight") { a += ["--skip-mem-preflight"] }
         if !osReserveGib.isEmpty, Service.flagAvailable("--os-reserve-gib") { a += ["--os-reserve-gib", osReserveGib] }
         if dspark, Service.flagAvailable("--dspark") { a += ["--dspark"] }
+        // ── mlx-serve 26.11.x 新增。同样逐项 flagAvailable 过滤，老引擎静默降级。
+        // 外露项：--no-plugins（插件排障）；其余为隐藏项，手改 config.json 仍生效。
+        if noPlugins, Service.flagAvailable("--no-plugins") { a += ["--no-plugins"] }
+        if !shutdownPersistSecs.isEmpty, Service.flagAvailable("--shutdown-persist-secs") {
+            a += ["--shutdown-persist-secs", shutdownPersistSecs]
+        }
+        if ane, Service.flagAvailable("--ane") { a += ["--ane"] }
+        // --ane-slots 依赖 --ane：没开 ANE 时不传，避免无效/报错组合
+        if ane, !aneSlots.isEmpty, Service.flagAvailable("--ane-slots") { a += ["--ane-slots", aneSlots] }
+        if int8Qk, Service.flagAvailable("--int8-qk") { a += ["--int8-qk"] }
+        // 三态开关："on"/"off" 分别对应正/负向拼写，留空不传（用引擎默认）
+        if w8a8 == "on", Service.flagAvailable("--w8a8") { a += ["--w8a8"] }
+        if w8a8 == "off", Service.flagAvailable("--no-w8a8") { a += ["--no-w8a8"] }
+        if lmHeadMxfp8 == "on", Service.flagAvailable("--lm-head-mxfp8") { a += ["--lm-head-mxfp8"] }
+        if lmHeadMxfp8 == "off", Service.flagAvailable("--no-lm-head-mxfp8") { a += ["--no-lm-head-mxfp8"] }
+        if !mtpMinDepth.isEmpty, Service.flagAvailable("--mtp-min-depth") { a += ["--mtp-min-depth", mtpMinDepth] }
+        if noPrefixCacheRam, Service.flagAvailable("--no-prefix-cache-ram") { a += ["--no-prefix-cache-ram"] }
+        if warmupFull, Service.flagAvailable("--warmup-full") { a += ["--warmup-full"] }
+        if !llamaMtpDrafts.isEmpty, Service.flagAvailable("--llama-mtp-drafts") { a += ["--llama-mtp-drafts", llamaMtpDrafts] }
+        if !llamaUbatch.isEmpty, Service.flagAvailable("--llama-ubatch") { a += ["--llama-ubatch", llamaUbatch] }
+        // 消融二项必须成对（引擎要求同时给，key 文件需 0600、≥32 字节），缺一只好不传
+        if !ablationProfiles.isEmpty, !ablationKeyFile.isEmpty,
+           Service.flagAvailable("--ablation-profiles"), Service.flagAvailable("--ablation-key-file") {
+            a += ["--ablation-profiles", ablationProfiles, "--ablation-key-file", ablationKeyFile]
+        }
+        if !wiredMarginGib.isEmpty, Service.flagAvailable("--wired-margin-gib") { a += ["--wired-margin-gib", wiredMarginGib] }
+        // --dist 五件套：依赖项只在 --dist 已给时才拼，避免无效组合
+        if !dist.isEmpty, Service.flagAvailable("--dist") {
+            a += ["--dist", dist]
+            if !distModel.isEmpty, Service.flagAvailable("--dist-model") { a += ["--dist-model", distModel] }
+            if !distCoordinator.isEmpty, Service.flagAvailable("--dist-coordinator") { a += ["--dist-coordinator", distCoordinator] }
+            if !distDevice.isEmpty, Service.flagAvailable("--dist-device") { a += ["--dist-device", distDevice] }
+            if !distSplit.isEmpty, Service.flagAvailable("--dist-split") { a += ["--dist-split", distSplit] }
+        }
         return a
     }
 }
@@ -1054,7 +1284,9 @@ final class Config: Codable {
     var engine: Engine = .splash
     /// mlx-serve 的专属设置（engine == .mlx 时生效）
     var mlx = MLXConfig()
-    var model: String = "incoai/Qwen3.8-27B-Splash"
+    /// Splash 默认模型。**1.3.1 起 incoai/*-Splash 包彻底不加载**（官方 Breaking change），
+    /// 改用官方指定的等权重 MLX 替代仓库；老配置里的旧包名在 init(from:) 做迁移映射。
+    var model: String = "mlx-community/Qwen3.8-27B-4bit"
     var maxMemory: String = "auto"
     var maxContext: String = "auto"
     var apiKey: String = ""
@@ -1065,7 +1297,8 @@ final class Config: Codable {
     var maxRequestSize: String = ""
     /// --max-image-pixels。留空=不传该参数，用引擎默认（4194304）
     var maxImagePixels: String = ""
-    /// --max-cache-disk。留空=不传该参数（即关闭 SSD 缓存层）。
+    /// --max-cache-disk。留空=不传该参数，**1.3.2 起引擎默认 auto**（免费空间的 1/4，
+    /// 保底 10G、至多 32 GiB）；**显式 "0" 才是关闭 SSD 缓存层**。
     /// 1.1.0 起为正式特性（1.0.x 及更早不认识，传了会让 argparse 直接退出、
     /// 服务起不来）—— 所以仍走 serveArguments 的 flagAvailable 过滤，老引擎上自动降级为不传。
     /// 实测注意：默认 SSD 层不跨进程重启留存，重启后首次请求仍是 cached 0 ——
@@ -1089,10 +1322,11 @@ final class Config: Codable {
     /// 注意：绑 0.0.0.0 上局域网时务必同时设 API Key。
     var host: String = "127.0.0.1"
     /// --idle-release：空闲多久后引擎解绑内存、释放权重（秒或带 s/m/h 后缀）。
-    /// **1.2.x 起引擎默认 10m** —— 这是个行为变化：以前权重一直驻留，
-    /// 现在十分钟没请求就卸载、下次请求重新加载。"off" = 永不释放（老行为）。
-    /// 留空 = 不传，用引擎默认（10m）。
-    var idleRelease: String = ""
+    /// **1.2.x 起引擎默认 10m**：十分钟没请求就卸载、下次请求重新加载。
+    /// **本机默认 "off"（常驻不卸载）**：菜单栏工具的核心价值是随时秒回，
+    /// 75GB 级模型重新加载即使 1.7.1 快 1.54x 仍是数十秒级；128GB 足以长期驻留。
+    /// 官方 off 语义保留 POST /v1/memory/release 手动释放出口。留空 = 用引擎默认（10m）。
+    var idleRelease: String = "off"
     /// --decode-share：其它请求 prefill 时，解码流应得的墙钟时间比例（0..0.9）。
     /// 引擎默认 0.5；0 = 逐条命令交替。留空 = 不传。
     var decodeShare: String = ""
@@ -1104,9 +1338,11 @@ final class Config: Codable {
     /// --allowed-origin：允许浏览器/webview 跨源调 API 的 origin（可重复；CLI 传一个）。
     /// 例 tauri://localhost、*。留空 = 不传。
     var allowedOrigin: String = ""
-    /// --persistent-cache：SSD 缓存在进程重启后保留（argparse 强制要求 --max-cache-disk，
-    /// serveArguments 里同条件守卫，缺了就不传 —— 传了会 parser.error、服务起不来）。
-    var persistentCache: Bool = false
+    /// --persistent-cache：SSD 缓存在进程重启后保留。**本机默认开**：128GB + 大模型 +
+    /// 频繁重启切换，跨重启保留前缀缓存收益极大（1.7.1 跨会话 TTFT 快 2.5–2.9x）。
+    /// 守卫：引擎仅在 --max-cache-disk 显式为 0 时 parser.error；1.3.2 起留空（=auto）
+    /// 也能开 —— serveArguments 的守卫相应放宽为 maxCacheDisk != "0"。
+    var persistentCache: Bool = true
     /// --cache-dir：--persistent-cache 的落盘目录（同样依赖 persistentCache）。
     /// 引擎默认 ~/Library/Caches/Splash/prefix-cache。
     var cacheDir: String = ""
@@ -1122,6 +1358,66 @@ final class Config: Codable {
     /// 菜单栏是否显示实时速度（只在有速率时出现，空闲时自动消失）
     var showSpeed: Bool = true
 
+    // ── Splash 1.3.x–1.7.1 新增。外露 3 项（disableAne / maxConcurrentRequests / thinkingTokenBudget），
+    // 其余为"隐藏"项：不进菜单，但字段/门控/拼装保留，手改 config.json 仍生效 ──
+    /// --disable-ane（1.3.0）：反向开关，true = 关闭 ANE FFN 拆分、只用 GPU prefill。
+    /// 默认 false（ANE 保持开）：官方实测本机同型号 M5 Max MLX 4-bit 14K tokens TTFT 1.14x，
+    /// 1.7.1 再降 6–13%。外露理由是它是"精确性逃生门"（ANE 数值路径与 GPU-only 不同）。
+    /// needs="dense_ffn"：只对 dense 模型生效，MoE 包上菜单置灰（ModelCapGate.denseFfn）。
+    var disableAne: Bool = false
+    /// --max-concurrent-requests（1.7.1）：并发解码 lane 数（1..8）。默认 4（官方默认）；
+    /// 8 lane 吞吐更高但 verify block 翻倍、挤占上下文，14 寸散热下不宜默认拉满。
+    var maxConcurrentRequests: String = "4"
+    /// --thinking-token-budget（1.3.2）：未自带预算的思考请求的 thinking token 上限。
+    /// 留空 = 不限（引擎默认）；与 mlx 侧 --reasoning-budget 菜单对称。
+    var thinkingTokenBudget: String = ""
+    /// --recalibrate-ane（1.3.0，隐藏）：本次启动重新校准 ANE 分摊（而非用本机缓存的校准）。
+    /// 与 --disable-ane 互斥（check_serve_arguments），拼装侧已做二选一守卫。
+    var recalibrateAne: Bool = false
+    /// --activations（1.6.1，隐藏）：auto/bf16。M5+ 上 auto 走 INT8（27B prefill 省约 1/4 TTFT），
+    /// 默认即最优；bf16 仅评测逃生门，手改配置。
+    var activations: String = ""
+    /// --verify-rows（1.4.0，隐藏）：auto/all。auto 自适应 verify（MoE 解码 +13–38%），
+    /// 代价是 greedy 输出跨 run 不稳定；all 是评测逃生门。
+    var verifyRows: String = ""
+    /// --expert-memory（1.4.0，隐藏）：auto/SIZE/off。1.6.0 起 auto 为弹性专家存储
+    /// （随内存增长、按需归还），手动固定值反而丧失弹性。
+    var expertMemory: String = ""
+    /// --ple-memory（1.4.0，隐藏）：auto/SIZE/off。官方实测加大 PLE 缓存无收益，
+    /// 内存应留给专家存储；needs="ple_table"。
+    var pleMemory: String = ""
+    /// --sparse-kv-memory（1.4.0，隐藏）：块稀疏模型的 KV RAM 缓存（如 1200M），
+    /// auto 不低于 floor；needs="sparse_kv"，仅 Flash-Next 生效。
+    var sparseKvMemory: String = ""
+    /// --state-format（1.3.2，隐藏）：fp32/bf16。bf16 省一半状态，但 1.7.0 的
+    /// --cached-states int8 已把缓存状态压得更小，收益重叠；保 fp32 计算精度。
+    var stateFormat: String = ""
+    /// --cached-states（1.7.0，隐藏）：int8/exact。int8 把 27B 缓存状态 152.6→46.9 MiB，
+    /// 默认即最优；exact 是评测逃生门。
+    var cachedStates: String = ""
+    /// --max-cache-disk-writes（1.3.2，隐藏）：SSD 缓存每日写入上限（如 200G）。
+    /// 默认 0=无限；引擎要求 max-cache-disk 非 0，拼装侧同条件守卫。
+    var maxCacheDiskWrites: String = ""
+    /// --reasoning-effort（1.7.0，隐藏，强烈建议不外露）：**强制覆盖每个请求**的思考强度。
+    /// 与现有 reasoningEffort 字段对应的 --default-reasoning-effort **互斥**，
+    /// 同传即 parser.error 服务起不来 —— 拼装侧做二选一守卫（本字段优先）。
+    var forcedReasoningEffort: String = ""
+    /// --thinking-end-text（1.3.2，隐藏）：自定义思考闭合文本（须以 </think> 结尾且 ≤64 token）。
+    var thinkingEndText: String = ""
+    /// --sampling-default（1.7.1，隐藏）：覆盖家族发布采样默认（NAME=VALUE，如 temperature=0.6）。
+    /// CLI 传一个（引擎支持 append，手改配置可填单项）。
+    var samplingDefault: String = ""
+    /// --chat-template-file（1.7.0，隐藏）：Jinja 模板文件路径，覆盖模型自带模板。
+    /// 换模板会破坏工具调用格式，风险高收益低。
+    var chatTemplateFile: String = ""
+    /// --mmproj（launcher 1.5.0，隐藏）：本地 GGUF 的独立视觉投影器文件，依赖 --model-dir。
+    var mmproj: String = ""
+    /// --model-dir（launcher 1.5.0，**隐藏实现，不外露**，P2 可选项按排期跳过菜单）：
+    /// 直接服务本地 GGUF 文件/MLX 目录、不联系 Hub。
+    /// **注意与 modelDirSplash 语义不同**：后者是"模型发现目录"（扫描/展示用，不传 flag），
+    /// 本字段是真正传给引擎的 --model-dir；保留它是为了让隐藏的 --mmproj 手改配置可用。
+    var serveModelDir: String = ""
+
     /// 手写解码：任一字段缺失（老版本配置文件）都退回默认值，不整体丢弃配置
     init() {}
 
@@ -1131,6 +1427,10 @@ final class Config: Codable {
         engine            = (try? c.decode(Engine.self, forKey: .engine)) ?? engine
         mlx               = (try? c.decode(MLXConfig.self, forKey: .mlx)) ?? mlx
         model             = (try? c.decode(String.self, forKey: .model)) ?? model
+        // 老配置迁移：Splash 1.3.1 起 incoai/*-Splash 包彻底不加载，官方指定等权重替代。
+        // 必须在解码层映射：否则老配置原样读出仍崩，且 splashInstalledModels 会把坏值塞回清单。
+        if model == "incoai/Qwen3.8-27B-Splash" { model = "mlx-community/Qwen3.8-27B-4bit" }
+        if model == "incoai/Qwen3.6-35B-A3B-Splash" { model = "mlx-community/Qwen3.6-35B-A3B-4bit" }
         maxMemory         = (try? c.decode(String.self, forKey: .maxMemory)) ?? maxMemory
         maxContext        = (try? c.decode(String.self, forKey: .maxContext)) ?? maxContext
         apiKey            = (try? c.decode(String.self, forKey: .apiKey)) ?? apiKey
@@ -1161,6 +1461,25 @@ final class Config: Codable {
         autoStartOnLaunch = (try? c.decode(Bool.self, forKey: .autoStartOnLaunch)) ?? autoStartOnLaunch
         showModelName     = (try? c.decode(Bool.self, forKey: .showModelName)) ?? showModelName
         showSpeed         = (try? c.decode(Bool.self, forKey: .showSpeed)) ?? showSpeed
+        // Splash 1.3.x–1.7.1 新增字段：老配置缺键一律退回默认（隐藏项默认 = 不传）
+        disableAne        = (try? c.decode(Bool.self, forKey: .disableAne)) ?? disableAne
+        maxConcurrentRequests = (try? c.decode(String.self, forKey: .maxConcurrentRequests)) ?? maxConcurrentRequests
+        thinkingTokenBudget = (try? c.decode(String.self, forKey: .thinkingTokenBudget)) ?? thinkingTokenBudget
+        recalibrateAne    = (try? c.decode(Bool.self, forKey: .recalibrateAne)) ?? recalibrateAne
+        activations       = (try? c.decode(String.self, forKey: .activations)) ?? activations
+        verifyRows        = (try? c.decode(String.self, forKey: .verifyRows)) ?? verifyRows
+        expertMemory      = (try? c.decode(String.self, forKey: .expertMemory)) ?? expertMemory
+        pleMemory         = (try? c.decode(String.self, forKey: .pleMemory)) ?? pleMemory
+        sparseKvMemory    = (try? c.decode(String.self, forKey: .sparseKvMemory)) ?? sparseKvMemory
+        stateFormat       = (try? c.decode(String.self, forKey: .stateFormat)) ?? stateFormat
+        cachedStates      = (try? c.decode(String.self, forKey: .cachedStates)) ?? cachedStates
+        maxCacheDiskWrites = (try? c.decode(String.self, forKey: .maxCacheDiskWrites)) ?? maxCacheDiskWrites
+        forcedReasoningEffort = (try? c.decode(String.self, forKey: .forcedReasoningEffort)) ?? forcedReasoningEffort
+        thinkingEndText   = (try? c.decode(String.self, forKey: .thinkingEndText)) ?? thinkingEndText
+        samplingDefault   = (try? c.decode(String.self, forKey: .samplingDefault)) ?? samplingDefault
+        chatTemplateFile  = (try? c.decode(String.self, forKey: .chatTemplateFile)) ?? chatTemplateFile
+        mmproj            = (try? c.decode(String.self, forKey: .mmproj)) ?? mmproj
+        serveModelDir     = (try? c.decode(String.self, forKey: .serveModelDir)) ?? serveModelDir
     }
 
     static func load() -> Config {
@@ -1219,7 +1538,12 @@ final class Config: Codable {
         if noWebUI, Service.flagAvailable("--no-webui") { a += ["--no-webui"] }
         // 思考强度：直接决定输出前的思考量，是最影响"手感快慢"的一项
         // （none 基本不思考 → 明显更快）。留空则用引擎/模型模板的默认值。
-        if !reasoningEffort.isEmpty, Service.flagAvailable("--default-reasoning-effort") {
+        // **互斥守卫（1.7.0 check_serve_arguments）**：--reasoning-effort（强制覆盖每个请求，
+        // 隐藏项）与 --default-reasoning-effort 同传即 parser.error 起不来 ——
+        // 只能二选一，强制版优先（语义更强），不能只靠 flagAvailable。
+        if !forcedReasoningEffort.isEmpty, Service.flagAvailable("--reasoning-effort") {
+            a += ["--reasoning-effort", forcedReasoningEffort]
+        } else if !reasoningEffort.isEmpty, Service.flagAvailable("--default-reasoning-effort") {
             a += ["--default-reasoning-effort", reasoningEffort]
         }
         // ── Splash 1.1.0 新增的四项。同样逐项问引擎认不认识：
@@ -1256,16 +1580,48 @@ final class Config: Codable {
             a += ["--allowed-origin", allowedOrigin]
         }
         // --persistent-cache / --cache-dir 有跨参数校验（check_serve_arguments：
-        // 缺 --max-cache-disk 会 parser.error 直接起不来），所以拼装侧加同样的前置条件，
-        // 而不是只靠引擎门控 —— "菜单可选"不等于"现在传了能起来"。
-        if persistentCache, !maxCacheDisk.isEmpty, Service.flagAvailable("--persistent-cache") {
+        // max-cache-disk **显式为 0** 才 parser.error）。1.3.2 起留空 = auto ≠ 0 也能开，
+        // 守卫从"必须显式配额"放宽为"非 0"，否则默认配置（留空 + persistentCache=true）
+        // 会被过度保守的旧守卫静默丢弃。
+        if persistentCache, maxCacheDisk != "0", Service.flagAvailable("--persistent-cache") {
             a += ["--persistent-cache"]
         }
-        if persistentCache, !cacheDir.isEmpty, !maxCacheDisk.isEmpty, Service.flagAvailable("--cache-dir") {
+        if persistentCache, !cacheDir.isEmpty, maxCacheDisk != "0", Service.flagAvailable("--cache-dir") {
             a += ["--cache-dir", cacheDir]
         }
         if offline, Service.flagAvailable("--offline") { a += ["--offline"] }
         if allowIdleSleep, Service.flagAvailable("--allow-idle-sleep") { a += ["--allow-idle-sleep"] }
+        // ── Splash 1.3.x–1.7.1 新增。逐项 flagAvailable 过滤，老引擎静默降级为不传。
+        // 外露 3 项：
+        if disableAne, Service.flagAvailable("--disable-ane") { a += ["--disable-ane"] }
+        if !maxConcurrentRequests.isEmpty, Service.flagAvailable("--max-concurrent-requests") {
+            a += ["--max-concurrent-requests", maxConcurrentRequests]
+        }
+        if !thinkingTokenBudget.isEmpty, Service.flagAvailable("--thinking-token-budget") {
+            a += ["--thinking-token-budget", thinkingTokenBudget]
+        }
+        // 隐藏项（手改 config.json 仍生效）：
+        // --recalibrate-ane 与 --disable-ane 互斥（check_serve_arguments），已关 ANE 就不传
+        if recalibrateAne, !disableAne, Service.flagAvailable("--recalibrate-ane") { a += ["--recalibrate-ane"] }
+        if !activations.isEmpty, Service.flagAvailable("--activations") { a += ["--activations", activations] }
+        if !verifyRows.isEmpty, Service.flagAvailable("--verify-rows") { a += ["--verify-rows", verifyRows] }
+        if !expertMemory.isEmpty, Service.flagAvailable("--expert-memory") { a += ["--expert-memory", expertMemory] }
+        if !pleMemory.isEmpty, Service.flagAvailable("--ple-memory") { a += ["--ple-memory", pleMemory] }
+        if !sparseKvMemory.isEmpty, Service.flagAvailable("--sparse-kv-memory") { a += ["--sparse-kv-memory", sparseKvMemory] }
+        if !stateFormat.isEmpty, Service.flagAvailable("--state-format") { a += ["--state-format", stateFormat] }
+        if !cachedStates.isEmpty, Service.flagAvailable("--cached-states") { a += ["--cached-states", cachedStates] }
+        // --max-cache-disk-writes 同样要求 max-cache-disk 非 0（check_serve_arguments）
+        if !maxCacheDiskWrites.isEmpty, maxCacheDisk != "0", Service.flagAvailable("--max-cache-disk-writes") {
+            a += ["--max-cache-disk-writes", maxCacheDiskWrites]
+        }
+        if !thinkingEndText.isEmpty, Service.flagAvailable("--thinking-end-text") { a += ["--thinking-end-text", thinkingEndText] }
+        if !samplingDefault.isEmpty, Service.flagAvailable("--sampling-default") { a += ["--sampling-default", samplingDefault] }
+        if !chatTemplateFile.isEmpty, Service.flagAvailable("--chat-template-file") { a += ["--chat-template-file", chatTemplateFile] }
+        // launcher 层（1.5.0）：--model-dir 直接服务本地包；--mmproj 依赖它，缺了不传
+        if !serveModelDir.isEmpty, Service.flagAvailable("--model-dir") {
+            a += ["--model-dir", serveModelDir]
+            if !mmproj.isEmpty, Service.flagAvailable("--mmproj") { a += ["--mmproj", mmproj] }
+        }
         return a
     }
 }
@@ -1466,7 +1822,9 @@ enum Service {
 
     // MARK: 版本探测
 
-    /// 「正在运行」的版本。`/status` 不提供版本字段（schema 5 里只有 schema_version），
+    /// 「正在运行」的版本。`/status` 不提供版本字段（1.6.0 起 schema 8，仍只有 schema_version；
+    /// 1.6.0 删了两个字段但未公布字段名 —— 下方 status() 解析的键均按容错读取，
+    /// 缺键退回 0/空不会崩；具体删了哪两个待 QA 对比实际响应确认），
     /// 所以从进程可执行文件路径反推：托管进程跑的是
     /// `…/Cellar/splash/<ver>/libexec/python/bin/python3.13`（brew 装）
     /// 或 `…/splash-<ver>-arm64-macos26/…`（release 包解包后手动跑）。
@@ -1637,17 +1995,74 @@ enum Service {
         return "started pid=\(pid)"
     }
 
-    static func stop() -> String {
+    /// SIGTERM 后的优雅退出等待上限（秒），**按引擎分档**：
+    ///   - mlx-serve 26.11.3：--shutdown-persist-secs 默认 45s，SIGTERM 后要把 SSD 层
+    ///     未落盘的 slice 写完 → 等 ≥46s（留 1s 余量）。旧版只等 2s 就 SIGKILL，
+    ///     会截断前缀缓存落盘，正好抵消 prefix-cache-disk 的收益。
+    ///     用户显式设了 shutdownPersistSecs 时跟随该值（单一真相：从 cfg.mlx 读）。
+    ///   - Splash 1.7.1：SIGTERM 给持久缓存最新恢复点最多 6s 落盘，引擎自身 15s 后
+    ///     强杀仍在跑的内核 → 等 ≥16s 覆盖其内部窗口。
+    private static func stopGraceSeconds(cfg: Config?) -> TimeInterval {
+        switch (cfg?.engine ?? activeEngine) {
+        case .splash:
+            return 16.0
+        case .mlx:
+            // 非负整数才采纳（"0" 合法 = 引擎不落盘，立即退）；非法值退回默认 45
+            if let raw = cfg?.mlx.shutdownPersistSecs, !raw.isEmpty, let n = Int(raw), n >= 0 {
+                return TimeInterval(n) + 1.0
+            }
+            return 46.0
+        }
+    }
+
+    /// 进程是否已真正退出（含僵尸处理）。
+    /// kill(pid, 0) 对"已退出但未被父进程收尸"的僵尸仍返回 0 ——
+    /// 本 App posix_spawn 拉起的服务在 App 存活期间退出会变成僵尸，
+    /// 不处理会让轮询等待白等满整个窗口。先 waitpid(WNOHANG) 收尸自己的子进程；
+    /// 非本进程子进程（CLI 停 GUI 拉起的服务 / App 重启后接管的旧服务）
+    /// 走 libproc 读 pbi_status 判 SZOMB。
+    private static func hasExited(_ pid: pid_t) -> Bool {
+        if kill(pid, 0) != 0 { return true }
+        var status: Int32 = 0
+        let r = waitpid(pid, &status, WNOHANG)
+        if r == pid { return true }      // 自己的子进程，已退出并收尸
+        if r == 0 { return false }       // 自己的子进程，还在跑
+        // ECHILD：不是本进程的子进程，用 libproc 判僵尸
+        var info = proc_bsdinfo()
+        let n = proc_pidinfo(pid, kProcPidTBSDInfo, 0,
+                             &info, Int32(MemoryLayout<proc_bsdinfo>.stride))
+        if n == Int32(MemoryLayout<proc_bsdinfo>.stride) { return info.pbi_status == kSZOMB }
+        return false
+    }
+
+    /// 轮询等待进程退出：每 0.5s 查一次，**进程已死立即继续**，
+    /// 而非死等满窗口 —— 正常情况引擎几秒内就退了，只有真在落盘才会等满。
+    /// 超时仍存活才 SIGKILL 兜底，并短暂等待收尸避免在本 App 进程表里留僵尸。
+    private static func waitExitOrKill(_ pid: pid_t, grace: TimeInterval) {
+        let deadline = Date().addingTimeInterval(grace)
+        while Date() < deadline {
+            if hasExited(pid) { return }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        if !hasExited(pid) {
+            kill(-pid, SIGKILL)
+            kill(pid, SIGKILL)
+            for _ in 0..<10 {
+                if hasExited(pid) { break }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
+    }
+
+    /// 同步停止（CLI --stop / --restart 用，阻塞至多分档窗口 + 收尾）。
+    /// GUI 路径走 AppDelegate 的后台队列版本，不卡主线程。
+    static func stop(cfg: Config? = nil) -> String {
         var killed: [pid_t] = []
         if let pid = recordedPID {
             kill(-pid, SIGTERM)          // 整组：server.py + serve-native engine
             kill(pid, SIGTERM)
             killed.append(pid)
-        }
-        Thread.sleep(forTimeInterval: 2.0)
-        if let pid = recordedPID, isAlive(pid) {
-            kill(-pid, SIGKILL)
-            kill(pid, SIGKILL)
+            waitExitOrKill(pid, grace: stopGraceSeconds(cfg: cfg))
         }
         for p in pidsOnPort() where !killed.contains(p) {
             kill(p, SIGTERM)
@@ -1660,7 +2075,7 @@ enum Service {
     }
 
     static func restart(cfg: Config) -> String {
-        _ = stop()
+        _ = stop(cfg: cfg)
         return start(cfg: cfg)
     }
 
@@ -1838,6 +2253,7 @@ struct Snapshot {
     var owned = false     // pid 文件有效且进程存活（本 App 托管）
     var paused = false    // 托管进程处于 SIGSTOP 冻结
     var starting = false  // 刚刚下发过启动命令的短暂过渡态
+    var stopping = false  // 后台优雅停机中（SIGTERM 已发，等引擎落盘退出）
 
     /// 端口在响应，但不是我们管的（例如手工在终端跑的 splash）
     var isExternal: Bool { served && !owned }
@@ -1854,19 +2270,20 @@ struct MenuPolicy {
     /// 启动（暂停态下语义为"继续"）
     /// 关键：端口已被占用（served）时一律不可启动，否则会 spawn 第二个进程、
     /// 绑定 8000 失败，pid 文件却被新 pid 覆盖，造成"显示托管中、实际是死的"错乱。
-    var canStart: Bool { !s.starting && !s.served && (!s.owned || s.paused) }
+    var canStart: Bool { !s.starting && !s.stopping && !s.served && (!s.owned || s.paused) }
 
     /// 暂停：只有真正在跑的托管进程才能暂停
-    var canPause: Bool { s.owned && s.isRunning && !s.starting }
+    var canPause: Bool { s.owned && s.isRunning && !s.starting && !s.stopping }
 
-    /// 停止：有托管进程，或端口被外部进程占用（此时"停止"即清掉外部进程）
-    var canStop: Bool { (s.owned || s.isExternal) && !s.starting }
+    /// 停止：有托管进程，或端口被外部进程占用（此时"停止"即清掉外部进程）。
+    /// 停机中置灰：落盘窗口（最长 46s）内重复下发启停会打断 SSD 缓存写入。
+    var canStop: Bool { (s.owned || s.isExternal) && !s.starting && !s.stopping }
 
     /// 重启：同停止。外部进程时等价于"接管后重启"
-    var canRestart: Bool { (s.owned || s.isExternal) && !s.starting }
+    var canRestart: Bool { (s.owned || s.isExternal) && !s.starting && !s.stopping }
 
     /// 接管：仅在外部进程占用端口时显示
-    var canTakeOver: Bool { s.isExternal && !s.starting }
+    var canTakeOver: Bool { s.isExternal && !s.starting && !s.stopping }
 
     /// 打开 Web UI
     var canOpenUI: Bool { s.isRunning }
@@ -1883,6 +2300,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var modelListCache: (at: Date, list: [String])?
     var timer: Timer?
     var starting = false
+    /// 后台优雅停机中（与 starting 同一套过渡态纪律，只在主线程读写）。
+    /// 停机窗口内菜单显示"正在停止…"并置灰启停，避免重复下发打断落盘。
+    var stopping = false
 
     // MARK: 生命周期
 
@@ -1995,7 +2415,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // 一次探测，统一快照；所有可用性判定都走 MenuPolicy
         let owned = Service.managed
         let isPaused = Service.paused
-        let snap = Snapshot(served: st.up, owned: owned, paused: isPaused, starting: starting)
+        let snap = Snapshot(served: st.up, owned: owned, paused: isPaused, starting: starting,
+                            stopping: stopping)
         let policy = MenuPolicy(s: snap)
 
         let external = snap.isExternal
@@ -2043,6 +2464,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         if external { menu.addItem(disabled("⚠️ port held by an external process, not managed by Splash-MLX")) }
         if starting { menu.addItem(disabled("⏳ loading model…")) }
+        if stopping { menu.addItem(disabled("⏳ stopping… flushing SSD cache")) }
         menu.addItem(.separator())
 
         // ── 引擎选择：决定下面整组菜单属于哪个引擎。
@@ -2144,6 +2566,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     /// 状态短标签（和版本号拼在同一行，所以不重复图标之外的信息）
     private func stateLabel() -> String {
+        if stopping { return "stopping (flushing SSD cache…)" }
         if Service.paused { return "paused (frozen, memory still held)" }
         if st.up { return Service.managed ? "running (managed)" : "running (external)" }
         if Service.managed || starting { return "starting (waiting for model)" }
@@ -2153,6 +2576,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// 状态圆点颜色。与菜单栏图标的三态配色同源（绿=在跑、琥珀=过渡、灰=停），
     /// 让图标与面板文字不会各说一套。
     private func stateDotColor() -> NSColor {
+        if stopping { return .systemOrange }
         if Service.paused { return .systemOrange }
         if st.up { return .systemGreen }
         if Service.managed || starting { return .systemOrange }
@@ -2181,8 +2605,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
         let label = stateLabel()
         // 状态文字本身也按档位上色（绿/橙/灰），但异常态额外加下划线做第二通道
-        let stateColor: NSColor = st.up ? .systemGreen
-            : (Service.paused || starting ? .systemOrange : .secondaryLabelColor)
+        let stateColor: NSColor = stopping ? .systemOrange
+            : (st.up ? .systemGreen
+            : (Service.paused || starting ? .systemOrange : .secondaryLabelColor))
         out.append(NSAttributedString(string: label, attributes: [
             .font: NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .medium),
             .foregroundColor: stateColor]))
@@ -2201,7 +2626,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// 从 App 包 Resources 里按 @3x → @2x → 1x 顺序取菜单栏图标
     private func menuBarIcon() -> NSImage? {
         let name: String
-        if Service.paused { name = "menubar_paused" }
+        if stopping { name = "menubar_paused" }        // 停机中：琥珀色过渡态
+        else if Service.paused { name = "menubar_paused" }
         else if st.up { name = "menubar_running" }
         else if Service.managed || starting { name = "menubar_paused" }   // 启动中：琥珀色过渡态
         else { name = "menubar_stopped" }
@@ -2325,9 +2751,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             return submenuItem(title, items: header + items)
         }
 
-        // 门二：模型包里有没有这个部件
+        // 门二：模型包里有没有这个部件（按当前引擎取包路径 —— Splash 的
+        // --disable-ane 也走这道门，不能再写死 mlx 侧路径）
         if let cap {
-            let caps = modelCaps(cfg.mlx.resolvedModelPath)
+            let caps = modelCaps(currentModelPackPath)
             if !cap.present(in: caps) {
                 var header: [NSMenuItem] = [disabled(cap.missingReason)]
                 header.append(.separator())
@@ -2342,23 +2769,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     /// 参数对**模型包自带部件**的依赖。和 `kMlxGatedParams`（引擎能力）是两条独立门控。
     enum ModelCapGate {
-        case mtp, vision
+        case mtp, vision, denseFfn
         func present(in caps: ModelCaps) -> Bool {
             switch self {
-            case .mtp:    return caps.mtp
-            case .vision: return caps.vision
+            case .mtp:      return caps.mtp
+            case .vision:   return caps.vision
+            case .denseFfn: return caps.denseFfn
             }
         }
         var missingReason: String {
             switch self {
-            case .mtp:    return "Model pack ships no MTP head (no mtp/ sidecar, no *.mtp.* tensors)"
-            case .vision: return "Model pack ships no vision tower"
+            case .mtp:      return "Model pack ships no MTP head (no mtp/ sidecar, no *.mtp.* tensors)"
+            case .vision:   return "Model pack ships no vision tower"
+            case .denseFfn: return "MoE pack detected — ANE FFN split only applies to dense models (needs dense_ffn)"
             }
         }
         var presentNote: String {
             switch self {
-            case .mtp:    return "Model pack: MTP head detected"
-            case .vision: return "Model pack: vision tower detected"
+            case .mtp:      return "Model pack: MTP head detected"
+            case .vision:   return "Model pack: vision tower detected"
+            // 措辞兼容 fail-open：探不到包时也算"未发现 MoE 证据"，不谎称已确认 dense
+            case .denseFfn: return "ANE split applies to dense models (no MoE experts detected)"
             }
         }
     }
@@ -2447,6 +2878,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         return String(format: "%.1f tok/s (%ds ago)", st.tps, Int(st.tpsStaleSeconds))
     }
 
+    /// 当前引擎选中模型包的磁盘路径（模型部件探测用）。
+    /// Splash 包在 <splashModelsDir>/<org>/<repo>（与 templateEffortDefaultHint 同一路径规则）；
+    /// mlx 侧走 resolvedModelPath。探不到时 modelCaps 按 fail-open 处理。
+    private var currentModelPackPath: String {
+        switch activeEngine {
+        // engineModelsDir 已含"手动指定目录"的覆盖语义，与模型发现同源
+        case .splash: return engineModelsDir.appendingPathComponent(cfg.model).path
+        case .mlx:    return cfg.mlx.resolvedModelPath
+        }
+    }
+
     /// 当前引擎选中的模型。两个引擎各存各的，所以读写都要按引擎分发。
     private var currentModel: String {
         switch activeEngine {
@@ -2520,53 +2962,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     /// Splash 引擎的参数菜单。按**使用意图**分三组，每组一个小号标题行 + 分隔线，
-    /// 让 14 项能靠扫读标题定位，而不是逐行看 flag 名。
+    /// 靠扫读标题定位，而不是逐行看 flag 名。
     /// 分组依据是"用户调它时想解决什么问题"，不是技术子系统：
     ///   - Memory & cache：吃多少机器资源（Context 归这里，因为它决定 KV cache 占用）
-    ///   - Model & decoding：模型怎么想、看什么（Max image pixels 与 Language only 同组）
-    ///   - Serving & access：谁能连、怎么连（Max request size 是接口契约，归这里）
+    ///   - Model & decoding：模型怎么想、看什么（思考预算 / ANE 拆分 / Language only 同组）
+    ///   - Serving & access：谁能连、怎么连（并发 lane 数是接口契约，归这里）
+    /// 1.7.1 升级后按"默认即最优"原则隐藏了一批高级旋钮（只摘菜单，字段/拼装保留）。
     private func splashSettingsItems() -> [NSMenuItem] {
         var items: [NSMenuItem] = []
 
+        // 隐藏项说明（原则 A）：--kv-format / --cache-dir / --max-request-size /
+        // --max-image-pixels / --decode-share / --request-timeout / --queue-size /
+        // --allowed-origin / --draft-model / --revision 不再进菜单，但 Config 字段、
+        // tag、kGatedParams 门控与 serveArguments 拼装全保留 —— 手改 config.json 仍生效。
         items += section("Memory & cache", first: true, [
             gatedSubmenu("Max memory  --max-memory", tag: kTagMaxMemory, items: choiceItems(
                 current: cfg.maxMemory,
-                options: [("auto", "auto (≈107 GB, M5 Max limit)"),
+                // 1.7.1 上界是 min(working set − margin, 90% RAM)，写死 ≈107 GB 无官方依据
+                options: [("auto", "auto (engine-planned)"),
                           ("24G", "24G"), ("32G", "32G"), ("48G", "48G"),
                           ("64G", "64G"), ("96G", "96G")],
                 customLabel: "Custom… (e.g. 28G)", tag: kTagMaxMemory)),
+            // 1.4.0 起超原生窗口自动静态 YaRN（最大 1M）；注意 YaRN 开启后
+            // **短 prompt 输出也会变**，默认保持 auto（原生 256K）不宜设 1M。
             gatedSubmenu("Context  --max-context", tag: kTagMaxContext, items: choiceItems(
                 current: cfg.maxContext,
-                options: [("auto", "auto (262144 = 256K)"),
-                          ("32K", "32K"), ("64K", "64K"), ("128K", "128K"), ("256K", "256K")],
+                options: [("auto", "auto (262144 = 256K, native)"),
+                          ("32K", "32K"), ("64K", "64K"), ("128K", "128K"), ("256K", "256K"),
+                          ("512K", "512K (YaRN — changes outputs even on short prompts)"),
+                          ("1M", "1M (YaRN — changes outputs even on short prompts)")],
                 customLabel: "Custom… (e.g. 100K)", tag: kTagMaxContext)),
-            gatedSubmenu("KV cache format  --kv-format", tag: kTagKvFormat, items: choiceItems(
-                current: cfg.kvFormat,
-                options: [("", "int8 (engine default)"),
-                          ("bf16", "bf16 — more memory, no quant loss")],
-                customLabel: "", tag: kTagKvFormat, custom: false)),
+            // 1.3.2 起默认 auto（免费空间 1/4，保底 10G、至多 32 GiB）；显式 0 才是关
             gatedSubmenu("Max cache disk  --max-cache-disk", tag: kTagCacheDisk, items: choiceItems(
                 current: cfg.maxCacheDisk,
-                options: [("", "Off (default)"),
+                options: [("", "Auto (default, ≤32 GiB)"),
+                          ("0", "Off"),
                           ("8G", "8G"), ("16G", "16G"), ("32G", "32G"), ("64G", "64G")],
                 customLabel: "Custom… (e.g. 12G)", tag: kTagCacheDisk)),
-            // 1.2.0 起 SSD 缓存可跨进程重启保留。argparse 强制要求先有 --max-cache-disk，
-            // 没配时传了会 parser.error —— 引擎认识也拦不住参数组合错误，这里显式写进说明。
+            // 1.2.0 起 SSD 缓存可跨进程重启保留；1.3.2 起留空（=auto）也能开，
+            // 只有 Max cache disk 显式设 0 时引擎才 parser.error。本机默认开。
             gatedSubmenu("Persistent cache  --persistent-cache", tag: kTagPersistentCache, items: boolItems(
                 on: cfg.persistentCache,
-                onLabel: "Keep SSD cache across restarts (needs Max cache disk)",
-                offLabel: "Discard on restart (default)",
+                onLabel: "Keep SSD cache across restarts (local default; needs cache disk ≠ 0)",
+                offLabel: "Discard on restart",
                 tag: kTagPersistentCache)),
-            gatedSubmenu("Cache dir  --cache-dir", tag: kTagCacheDir, items: choiceItems(
-                current: cfg.cacheDir,
-                options: [("", "Default (~/Library/Caches/Splash/prefix-cache)")],
-                customLabel: "Custom… (folder path)", tag: kTagCacheDir)),
             // 1.2.x 的行为级新默认：空闲 10 分钟就卸载权重。对"菜单栏常驻、要随时秒回"的用法
-            // 这项直接影响首包体感，必须给显式 "Never release" 出口（= 升级前的老行为）。
+            // 这项直接影响首包体感。本机默认 off（常驻不卸载），手动释放仍走 /v1/memory/release。
             gatedSubmenu("Idle release  --idle-release", tag: kTagIdleRelease, items: choiceItems(
                 current: cfg.idleRelease,
-                options: [("", "Engine default (10m — weights unload when idle)"),
-                          ("off", "Never release — keep weights resident"),
+                options: [("off", "Never release — keep weights resident (local default)"),
+                          ("", "Engine default (10m — weights unload when idle)"),
                           ("30m", "30m"), ("60m", "60m"), ("120m", "120m")],
                 customLabel: "Custom… (e.g. 45m)", tag: kTagIdleRelease)),
         ])
@@ -2579,33 +3024,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                           ("minimal", "minimal"), ("low", "low"),
                           ("medium", "medium"), ("high", "high")],
                 customLabel: "Custom… (xhigh / max)", tag: kTagReasoningEffort)),
-            gatedSubmenu("Draft model  --draft-model", tag: kTagDraftModel, items: choiceItems(
-                current: cfg.draftModel,
-                options: [("", "Auto (engine-picked DFlash2)")],
-                customLabel: "Custom… (repo or local dir)", tag: kTagDraftModel)),
-            gatedSubmenu("Model revision  --revision", tag: kTagRevision, items: choiceItems(
-                current: cfg.revision,
-                options: [("", "Repository default")],
-                customLabel: "Custom… (branch / tag / commit)", tag: kTagRevision)),
+            // 1.3.2 新增，与 mlx 侧 --reasoning-budget 菜单对称：思考请求未自带预算时的上限
+            gatedSubmenu("Thinking budget  --thinking-token-budget", tag: kTagSplashThinkingBudget, items: choiceItems(
+                current: cfg.thinkingTokenBudget,
+                options: [("", "Unlimited (default)"),
+                          ("4096", "4096 thinking tokens"), ("8192", "8192"),
+                          ("16384", "16384")],
+                customLabel: "Custom… (token count)", tag: kTagSplashThinkingBudget)),
+            // 1.3.0 新增，反向开关（与 --no-pld 同风格）：默认 ANE 开（本机 M5 Max 实测
+            // TTFT 1.14x，1.7.1 再降 6–13%）；关闭是"精确性逃生门"（ANE 数值路径与 GPU-only 不同）。
+            // needs="dense_ffn"：MoE 包上整组置灰（cap: .denseFfn）。
+            gatedSubmenu("ANE prefill split  --disable-ane", tag: kTagSplashDisableAne, items: boolItems(
+                on: !cfg.disableAne,
+                onLabel: "Enabled — GPU+ANE split (default, faster TTFT on M5)",
+                offLabel: "Disable --disable-ane (GPU only, exactness escape hatch)",
+                tag: kTagSplashDisableAne), cap: .denseFfn),
             gatedSubmenu("Language only  --language-only", tag: kTagLanguageOnly, items: boolItems(
                 on: !cfg.languageOnly,
                 onLabel: "Load vision too (default)",
                 offLabel: "Skip vision --language-only",
                 tag: kTagLanguageOnly)),
-            gatedSubmenu("Max image pixels  --max-image-pixels", tag: kTagMaxImagePixels, items: choiceItems(
-                current: cfg.maxImagePixels,
-                options: [("", "Engine default (4194304)"),
-                          ("1048576", "1M  = 1048576"), ("2097152", "2M  = 2097152"),
-                          ("4194304", "4M  = 4194304"), ("8388608", "8M  = 8388608")],
-                customLabel: "Custom… (pixel count)", tag: kTagMaxImagePixels)),
-            // 1.2.0 起：别的请求 prefill 时解码流能分到的墙钟比例（默认 0.5）
-            gatedSubmenu("Decode share  --decode-share", tag: kTagDecodeShare, items: choiceItems(
-                current: cfg.decodeShare,
-                options: [("", "Engine default (0.5)"),
-                          ("0", "0 — strict alternation"),
-                          ("0.25", "0.25 — prefill-friendly"),
-                          ("0.75", "0.75 — decode-friendly")],
-                customLabel: "Custom… (0–0.9)", tag: kTagDecodeShare)),
             // 1.2.0 起：完全不联系 HF Hub 启动已装模型（等价 HF_HUB_OFFLINE=1）
             gatedSubmenu("Offline  --offline", tag: kTagOffline, items: boolItems(
                 on: cfg.offline,
@@ -2624,11 +3062,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             // 这一项不是 CLI 参数：Splash-MLX 通过环境变量注入（--api-key 的 default 就是它）
             submenuItem("API Key  $SPLASH_API_KEY", items: apiKeyItems()),
             gatedSubmenu("Web UI  --no-webui", tag: kTagWebUI, items: webUIItems()),
-            gatedSubmenu("Max request size  --max-request-size", tag: kTagMaxRequestSize, items: choiceItems(
-                current: cfg.maxRequestSize,
-                options: [("", "128M (Splash 1.0.1 default — flag omitted)"),
-                          ("64M", "64M"), ("256M", "256M"), ("512M", "512M"), ("1G", "1G")],
-                customLabel: "Custom… (e.g. 32M)", tag: kTagMaxRequestSize)),
+            // 1.7.1 新增：并发解码 lane 数（1..8）。默认 4（官方默认）；8 lane 吞吐更高
+            // 但 verify block 翻倍（128 行 vs 64）、挤占上下文，多客户端时再自行提到 8。
+            gatedSubmenu("Concurrent requests  --max-concurrent-requests", tag: kTagSplashMaxConcurrent, items: choiceItems(
+                current: cfg.maxConcurrentRequests,
+                options: [("", "Engine default (4)"),
+                          ("1", "1 — serialize everything"), ("2", "2"),
+                          ("4", "4 (default)"), ("8", "8 — more throughput, less context")],
+                customLabel: "", tag: kTagSplashMaxConcurrent, custom: false)),
             // --host 非 1.2.0 才有：实测 Splash 1.1.0 已支持（同批还有 --allowed-host）。
             // 与其它受控项一样，只由 flagAvailable 门控。与 mlx 侧同一立场：
             // 默认只绑本机；要局域网共享就显式选 0.0.0.0（并务必同时设 API Key）。
@@ -2637,22 +3078,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 options: [("127.0.0.1", "127.0.0.1 — this Mac only (default)"),
                           ("0.0.0.0", "0.0.0.0 — all interfaces (LAN; set an API key!)")],
                 customLabel: "Custom… (e.g. 192.168.31.61)", tag: kTagSplashHost)),
-            // 1.2.0 起：允许哪些 origin 的浏览器/webview 页面直接调 API（CORS）
-            gatedSubmenu("Allowed origin  --allowed-origin", tag: kTagAllowedOrigin, items: choiceItems(
-                current: cfg.allowedOrigin,
-                options: [("", "None (default)")],
-                customLabel: "Custom… (e.g. tauri://localhost)", tag: kTagAllowedOrigin)),
-            // 1.2.0 起：排队/在途请求超时 504。引擎默认不过期，给常用档位
-            gatedSubmenu("Request timeout  --request-timeout", tag: kTagRequestTimeout, items: choiceItems(
-                current: cfg.requestTimeout,
-                options: [("", "No timeout (engine default)"),
-                          ("5m", "5m"), ("30m", "30m"), ("60m", "60m")],
-                customLabel: "Custom… (e.g. 90s)", tag: kTagRequestTimeout)),
-            gatedSubmenu("Queue size  --queue-size", tag: kTagQueueSize, items: choiceItems(
-                current: cfg.queueSize,
-                options: [("", "Engine default (32)"),
-                          ("1", "1 — serialize everything"), ("4", "4"), ("16", "16")],
-                customLabel: "Custom… (count)", tag: kTagQueueSize)),
             // 1.2.0 起：默认请求进行中阻止 Mac 空闲休眠；勾选允许后可与电源策略配合
             gatedSubmenu("Idle sleep  --allow-idle-sleep", tag: kTagAllowIdleSleep, items: boolItems(
                 on: !cfg.allowIdleSleep,
@@ -2666,11 +3091,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     /// mlx-serve 的参数菜单。字段全部来自 `MLXConfig`（与 Splash 那套完全隔离），
     /// 每一项都过 `gatedSubmenu` —— 引擎 `--help` 里没有该 flag 就整组置灰。
-    /// 分组与 Splash 同一套意图口径；Prefix cache 因为项多（4 个）单独成组，
-    /// 塞进 Memory 会把它们稀释掉。
+    /// 分组与 Splash 同一套意图口径；Prefix cache 单独成组（内存层/SSD 层是同一缓存
+    /// 的两个维度，拆开会把它们稀释掉）。26.11.3 升级后隐藏了条数/驱逐等排障旋钮。
     private func mlxSettingsItems() -> [NSMenuItem] {
         var items: [NSMenuItem] = []
 
+        // 隐藏项说明（原则 A）：--max-resident-mem / --os-reserve-gib / --skip-mem-preflight /
+        // --prefix-cache-entries / --idle-evict-secs / --drafter / --mtp-greedy-tail /
+        // --mtp-depth（已迁 --mtp-max-depth）/ --max-mtp-ctx / --no-decode-attn-quant
+        // 不再进菜单，但 MLXConfig 字段、tag、kMlxGatedParams 门控与拼装全保留 ——
+        // 手改 config.json 仍生效。
         items += section("Memory & context", first: true, [
             gatedSubmenu("Context  --ctx-size", tag: kTagMlxCtx, items: choiceItems(
                 current: cfg.mlx.ctxSize,
@@ -2682,37 +3112,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 current: cfg.mlx.kvQuant,
                 options: [("off", "off (default)"), ("4", "4-bit"), ("8", "8-bit")],
                 customLabel: "Custom…", tag: kTagMlxKvQuant)),
-            // 所有常驻模型的「总」内存上限。选项刻意保守 —— 调太小会频繁驱逐、反而更慢
-            gatedSubmenu("Max resident memory  --max-resident-mem", tag: kTagMlxResidentMem, items: choiceItems(
-                current: cfg.mlx.maxResidentMem,
-                options: [("", "Engine default (80% of wired limit)"),
-                          ("48GB", "48GB"), ("64GB", "64GB"), ("96GB", "96GB")],
-                customLabel: "Custom… (e.g. 80GB)", tag: kTagMlxResidentMem)),
+            // 本机默认 1：单个 Flash-Next 就 ~75GB，128GB 装不下第二个大模型，
+            // 设 1 避免 LRU 反复驱逐/重载；小模型用户可自行改回 3。
             gatedSubmenu("Max resident models  --max-resident-models", tag: kTagMlxResident, items: choiceItems(
                 current: cfg.mlx.maxResidentModels,
-                options: [("", "Engine default (3)"), ("1", "1"), ("2", "2"), ("3", "3")],
+                options: [("", "Engine default (3)"),
+                          ("1", "1 (local default — one big model stays resident)"),
+                          ("2", "2"), ("3", "3")],
                 customLabel: "Custom…", tag: kTagMlxResident)),
-            // 26.10.1：Qwen3.8-Flash-Next 专属 —— ~30GB n-gram PLE 表常驻 GPU，
-            // 换几个百分点 prefill/decode；只对该架构有意义。
-            // 实测该模型包的表正好 29.80 GiB，且**会算进 resident**：128GB 机器上与
-            // 现有权重相加后会超出引擎默认 resident cap，故把代价直接写进菜单文案。
+            // 26.10.1：Qwen3.8-Flash-Next 专属 —— ~30GB n-gram PLE 表常驻 GPU。
+            // 实测该模型包的表正好 29.80 GiB，且**会算进 resident**；官方 Flash-Next
+            // 模型卡明确该表 mmap 不常驻时 decode 速度不变 —— 本机应保持 off，
+            // "+few% speed" 的旧文案与模型卡矛盾，已按实测口径更正。
             gatedSubmenu("PLE table on GPU  --ple-gpu", tag: kTagMlxPleGpu, items: boolItems(
                 on: cfg.mlx.pleGpu,
-                onLabel: "Keep PLE table on GPU (+few% speed, but +~30 GB resident)",
+                onLabel: "Keep PLE table on GPU (+~30 GB resident, negligible speed gain on this pack)",
                 offLabel: "Read PLE table from disk (default)",
                 tag: kTagMlxPleGpu)),
-            // 内存规划余量：默认留 RAM 的 1/8（限 2–8GB）给 macOS。128GB 机器默认留 8GB
-            gatedSubmenu("OS free-RAM reserve  --os-reserve-gib", tag: kTagMlxOsReserveGib, items: choiceItems(
-                current: cfg.mlx.osReserveGib,
-                options: [("", "Engine default (RAM/8, clamped 2–8 GB)"),
-                          ("4", "4 GB"), ("8", "8 GB"), ("16", "16 GB"),
-                          ("0", "0 — turn the reserve off (risky under load)")],
-                customLabel: "Custom… (GiB)", tag: kTagMlxOsReserveGib)),
-            gatedSubmenu("Memory preflight  --skip-mem-preflight", tag: kTagMlxSkipMemPreflight, items: boolItems(
-                on: !cfg.mlx.skipMemPreflight,
-                onLabel: "Preflight load checks (default)",
-                offLabel: "Skip preflight --skip-mem-preflight (a real over-commit can crash)",
-                tag: kTagMlxSkipMemPreflight)),
             // 电源语义与 Splash 侧 --allow-idle-sleep 对齐：默认推理期间阻止空闲睡眠
             gatedSubmenu("Idle sleep during inference  --no-prevent-sleep", tag: kTagMlxNoPreventSleep, items: boolItems(
                 on: !cfg.mlx.noPreventSleep,
@@ -2725,36 +3141,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // 拆开会把它们稀释掉。Idle evict 放这里而非内存组 —— 用户找它的场景通常是
         // "为什么缓存没了 / 模型被踢了"，属于缓存生命周期。
         items += section("Prefix cache", [
-            // 内存层预算：引擎默认只给 2GB，大内存机器加大能明显提高命中率
+            // 内存层预算：引擎默认只给 2GB（hybrid/Qwen3.5+、sliding-ring、qwen4_exp
+            // 会自动抬到一个会话的工作上下文若更大）。本机默认显式 16GB，抬得更高。
             gatedSubmenu("Prefix cache memory  --prefix-cache-mem", tag: kTagMlxPrefixMem, items: choiceItems(
                 current: cfg.mlx.prefixCacheMem,
-                options: [("", "Engine default (2GB)"),
-                          ("4GB", "4GB"), ("8GB", "8GB"), ("16GB", "16GB")],
+                options: [("", "Engine default (2GB; hybrid/qwen4_exp raise to session size)"),
+                          ("4GB", "4GB"), ("8GB", "8GB"), ("16GB", "16GB (local default)")],
                 customLabel: "Custom… (e.g. 6GB)", tag: kTagMlxPrefixMem)),
+            // 本机默认 32GB：SSD 层让前缀跨重启存活（官方 11K-token 重启 TTFT 5.9s→0.7s）。
+            // 停机落盘窗口由 Service.stop 按 --shutdown-persist-secs（默认 45s）覆盖。
             gatedSubmenu("Prefix cache SSD  --prefix-cache-disk", tag: kTagMlxPrefixDisk, items: choiceItems(
                 current: cfg.mlx.prefixCacheDisk,
-                options: [("", "Off (default)"),
-                          ("4GB", "4GB"), ("10GB", "10GB"), ("32GB", "32GB")],
+                options: [("", "Off (engine default)"),
+                          ("4GB", "4GB"), ("10GB", "10GB"), ("32GB", "32GB (local default)")],
                 customLabel: "Custom… (e.g. 10GB)", tag: kTagMlxPrefixDisk)),
-            gatedSubmenu("Prefix cache entries  --prefix-cache-entries", tag: kTagMlxPrefixEnt, items: choiceItems(
-                current: cfg.mlx.prefixCacheEntries,
-                options: [("", "Engine default (32)"),
-                          ("64", "64"), ("128", "128"), ("256", "256")],
-                customLabel: "Custom… (count)", tag: kTagMlxPrefixEnt)),
-            gatedSubmenu("Idle evict  --idle-evict-secs", tag: kTagMlxIdle, items: choiceItems(
-                current: cfg.mlx.idleEvictSecs,
-                options: [("", "Off (default)"), ("300", "300 s"), ("900", "900 s"), ("3600", "3600 s")],
-                customLabel: "Custom… (seconds)", tag: kTagMlxIdle)),
         ])
 
         items += section("Model & decoding", [
-            // MTP 投机解码。三态而非布尔：MoE 模型引擎**默认关** MTP，
-            // 想开必须显式 --mtp（旧版只有负向开关，导致 --mtp 永远缺席）。
+            // MTP 投机解码。三态而非布尔。26.11.3 起 Metal（Mac）上头加载即默认开
+            // （dense 与 MoE 皆然），"auto" 与 "on" 在 Mac 上等价；显式传 --mtp
+            // 保留给 26.9.x 及更早（那里 MoE 默认关）。关仍只有 --no-mtp 一条路。
             // 第二道门是模型包真带头（cap: .mtp），没带头整组置灰并说明原因。
             gatedSubmenu("MTP speculative  --mtp", tag: kTagMlxMTP, items: choiceItems(
                 current: cfg.mlx.mtpMode,
-                options: [("on", "On — pass --mtp (required for MoE models)"),
-                          ("auto", "Auto — engine default (off for MoE, on for dense)"),
+                options: [("on", "On (engine default on Mac)"),
+                          ("auto", "Auto — engine default (on when a head is loaded)"),
                           ("off", "Off — pass --no-mtp")],
                 customLabel: "", tag: kTagMlxMTP, custom: false), cap: .mtp),
             // PLD：引擎默认开，这里只给"强制关"的出口
@@ -2763,39 +3174,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 onLabel: "Enabled (engine default)",
                 offLabel: "Force-disable --no-pld",
                 tag: kTagMlxPLD)),
-            gatedSubmenu("Drafter  --drafter", tag: kTagMlxDrafter, items: choiceItems(
-                current: cfg.mlx.drafter,
-                options: [("", "Auto (use the checkpoint's own)")],
-                customLabel: "Custom… (drafter folder)", tag: kTagMlxDrafter)),
             gatedSubmenu("Vision  --no-vision", tag: kTagMlxVision, items: boolItems(
                 on: !cfg.mlx.noVision,
                 onLabel: "Load the vision encoder",
                 offLabel: "Skip it --no-vision (saves memory)",
                 tag: kTagMlxVision), cap: .vision),
-            // ── 26.10.1 的 MTP 精调三件套 ──
-            // greedy-tail：采样请求只首个草稿 token 走采样、其余 argmax（默认关=精确语义）
-            gatedSubmenu("MTP greedy tail  --mtp-greedy-tail", tag: kTagMlxMtpGreedyTail, items: boolItems(
-                on: cfg.mlx.mtpGreedyTail,
-                onLabel: "On — draft tail by argmax (lossier, cheaper)",
-                offLabel: "Off — exact (default)",
-                tag: kTagMlxMtpGreedyTail)),
-            gatedSubmenu("MTP draft depth  --mtp-depth", tag: kTagMlxMtpDepth, items: choiceItems(
-                current: cfg.mlx.mtpDepth,
-                options: [("", "Adaptive (engine controller, up to 8 on M5)"),
-                          ("2", "2"), ("4", "4"), ("6", "6"), ("8", "8")],
-                customLabel: "Custom… (tokens per round)", tag: kTagMlxMtpDepth)),
-            gatedSubmenu("MTP context ceiling  --max-mtp-ctx", tag: kTagMlxMaxMtpCtx, items: choiceItems(
-                current: cfg.mlx.maxMtpCtx,
-                options: [("", "No ceiling (default)"),
-                          ("32768", "32K"), ("65536", "64K"), ("131072", "128K")],
-                customLabel: "Custom… (tokens)", tag: kTagMlxMaxMtpCtx)),
-            // 有损 decode 量化（INT8/NVFP4 侧副本）自 26.9.6 起就默认 ON，
-            // 并非 26.10.1 引入的默认行为变化；这里只是保留显式关断口。
-            gatedSubmenu("Decode attn quant  --no-decode-attn-quant", tag: kTagMlxDecodeAttnQuant, items: boolItems(
-                on: !cfg.mlx.noDecodeAttnQuant,
-                onLabel: "Enabled — engine default (lossy INT8/NVFP4 decode)",
-                offLabel: "Disable — pass --no-decode-attn-quant (exact decode)",
-                tag: kTagMlxDecodeAttnQuant)),
             gatedSubmenu("Reasoning budget  --reasoning-budget", tag: kTagMlxReasoningBudget, items: choiceItems(
                 current: cfg.mlx.reasoningBudget,
                 options: [("", "Unlimited (default)"),
@@ -2832,6 +3215,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 onLabel: "Discover peers' models (shown as id@peer)",
                 offLabel: "Off (default)",
                 tag: kTagMlxLanDiscover)),
+            // 26.11.3 新增：外部插件排障开关（EXL3 等已移为独立插件，
+            // "a model a refused plugin served names it in its load error"）
+            gatedSubmenu("External plugins  --no-plugins", tag: kTagMlxNoPlugins, items: boolItems(
+                on: !cfg.mlx.noPlugins,
+                onLabel: "Load plugins from ~/.mlx-serve/plugins (default)",
+                offLabel: "Skip plugins --no-plugins (troubleshooting)",
+                tag: kTagMlxNoPlugins)),
             submenuItem("Model folder…", items: modelDirItems()),
         ])
 
@@ -2848,11 +3238,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 onLabel: "EXPERIMENTAL — MLX instead of llama.cpp",
                 offLabel: "llama.cpp (default)",
                 tag: kTagMlxMlxGguf)),
-            // DeepSeek-V4 专属草稿级（常驻 ~11GB，引擎默认关）
+            // DeepSeek-V4 专属草稿级（常驻 ~11GB）。26.11.3 起自带 stage 的包
+            // （如 Pruned192）默认就跑 DSpark（除非 --no-mtp），此 flag 主要面向旧包。
             gatedSubmenu("DSpark stages  --dspark", tag: kTagMlxDspark, items: boolItems(
                 on: cfg.mlx.dspark,
-                onLabel: "On — DSpark drafts (~11 GB resident)",
-                offLabel: "Off (default)",
+                onLabel: "On — DSpark drafts (~11 GB resident; packs shipping stages run them by default)",
+                offLabel: "Off (default; only affects packs without their own stages)",
                 tag: kTagMlxDspark)),
         ])
 
@@ -2952,13 +3343,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc func pickEngine(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
               let e = Engine(rawValue: raw), e != cfg.engine else { return }
-        if Service.managed || Service.status().up { _ = Service.stop() }
-        cfg.engine = e
-        cfg.save()
-        invalidateModelCapsCache()   // 换引擎 = 换模型集，能力探测结果作废
-        applyConfig(cfg)
-        invalidateModelList()
-        refresh()
+        // 停机中忽略切换（启停已置灰，这里是第二道保险）
+        guard !stopping else { return }
+        let needStop = Service.managed || Service.status().up
+        // 停机可能等落盘窗口（最长 46s），不能卡主线程 ——
+        // **cfg.engine 必须等旧服务停完再改**：否则等待期间 applyConfig/端口探测/
+        // 状态栏会提前切到新引擎，菜单显示与实际在跑的进程错乱。
+        // 停机窗口用**旧引擎**的分档（此刻 cfg.engine 仍是旧值，直接传 cfg 即可）。
+        if needStop {
+            stopping = true
+            rebuildMenu()
+            let cfgOld = cfg
+            DispatchQueue.global().async { [weak self] in
+                let msg = Service.stop(cfg: cfgOld)
+                print("[Splash-MLX] engine switch: \(msg)")
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    self.stopping = false
+                    self.cfg.engine = e
+                    self.cfg.save()
+                    invalidateModelCapsCache()
+                    applyConfig(self.cfg)
+                    self.invalidateModelList()
+                    self.refresh()
+                }
+            }
+        } else {
+            cfg.engine = e
+            cfg.save()
+            invalidateModelCapsCache()   // 换引擎 = 换模型集，能力探测结果作废
+            applyConfig(cfg)
+            invalidateModelList()
+            refresh()
+        }
     }
 
     /// 按引擎分发：能用引擎自己的 list 就用（口径和引擎一致），
@@ -3043,7 +3460,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
 
         var list = out.sorted()
-        if list.isEmpty { list = ["incoai/Qwen3.8-27B-Splash", "incoai/Qwen3.6-35B-A3B-Splash"] }
+        // 兜底清单同步迁移：1.3.1 起 incoai/*-Splash 包彻底不加载，改官方指定的等权重替代
+        if list.isEmpty { list = ["mlx-community/Qwen3.8-27B-4bit", "mlx-community/Qwen3.6-35B-A3B-4bit"] }
         if !list.contains(cfg.model) { list.append(cfg.model) }
         return list
     }
@@ -3117,8 +3535,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         a.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
         guard a.runModal() == .alertFirstButtonReturn else { return }
-        print("[Splash-MLX] quit: \(Service.stop())")
-        NSApp.terminate(nil)
+        if stopping {
+            // SIGTERM 已发出：引擎是独立会话进程，App 退出后它仍会自行落盘退出，
+            // 不会被连带强杀 —— 直接 terminate 即可，不必再等窗口。
+            NSApp.terminate(nil)
+            return
+        }
+        // 退出前也要给足落盘窗口（最长 46s）：后台停完再 terminate，
+        // 不在主线程死等 —— 否则退出时菜单栏会卡死到强杀。
+        stopping = true
+        rebuildMenu()
+        let cfgNow = cfg
+        DispatchQueue.global().async {
+            let msg = Service.stop(cfg: cfgNow)
+            print("[Splash-MLX] quit: \(msg)")
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
     }
 
     @objc func toggleModelName() {
@@ -3132,19 +3564,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc func stopService() {
+        // 优雅停机窗口按引擎分档（Splash 16s / mlx 46s），轮询提前退出；
+        // 全程后台队列 + "正在停止…"过渡态，主线程不阻塞。
+        guard !stopping else { return }   // 落盘窗口内重复下发会打断写入
+        stopping = true
+        rebuildMenu()
+        let cfgNow = cfg
         DispatchQueue.global().async { [weak self] in
-            let msg = Service.stop()
+            let msg = Service.stop(cfg: cfgNow)
             print("[Splash-MLX] \(msg)")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self?.refresh() }
+            DispatchQueue.main.async {
+                self?.stopping = false
+                self?.refresh()
+            }
         }
     }
 
     @objc func restartService() {
-        starting = true
+        // 两阶段过渡态：先"正在停止…"（落盘窗口最长 46s），停完再"loading model…"。
+        // 全程后台队列，主线程不阻塞；CLI 仍走 Service.restart 的同步合并路径。
+        // 停机中收到重启请求（如改参数后的 askRestart）：不打断落盘，停完后用户再启。
+        guard !stopping else { refresh(); return }
+        stopping = true
         rebuildMenu()
         let cfgNow = cfg
         DispatchQueue.global().async { [weak self] in
-            let msg = Service.restart(cfg: cfgNow)
+            let stopMsg = Service.stop(cfg: cfgNow)
+            print("[Splash-MLX] restart: \(stopMsg)")
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.stopping = false
+                self.starting = true
+                self.rebuildMenu()
+            }
+            let msg = Service.start(cfg: cfgNow)
             print("[Splash-MLX] \(msg)")
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
                 self?.starting = false
@@ -3192,6 +3645,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case kTagCacheDir:        cfg.cacheDir = v
         case kTagOffline:         cfg.offline = (v == "on")
         case kTagAllowIdleSleep:  cfg.allowIdleSleep = (v == "off")
+        // ── Splash 1.3.x–1.7.1 新增外露项。布尔项方向与菜单标签语义对齐：
+        // "ANE enabled" 对应 on → disableAne=false
+        case kTagSplashDisableAne:     cfg.disableAne = (v == "off")
+        case kTagSplashMaxConcurrent:  cfg.maxConcurrentRequests = v
+        case kTagSplashThinkingBudget: cfg.thinkingTokenBudget = v
         // ── MLX 专属（写入 cfg.mlx，与 Splash 那套完全隔离）
         case kTagMlxPort:        cfg.mlx.port = v
         case kTagMlxHost:        cfg.mlx.host = v
@@ -3223,6 +3681,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case kTagMlxDspark:          cfg.mlx.dspark = (v == "on")
         case kTagMlxLanShare:        cfg.mlx.lanShare = v
         case kTagMlxLanDiscover:     cfg.mlx.lanDiscover = (v == "on")
+        // ── mlx-serve 26.11.x 新增外露项："Load plugins" 对应 on → noPlugins=false
+        case kTagMlxNoPlugins:       cfg.mlx.noPlugins = (v == "off")
         default: return
         }
         cfg.save()
@@ -3262,6 +3722,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case kTagAllowedOrigin:  cfg.allowedOrigin = v
         case kTagCacheDir:       cfg.cacheDir = v
         case kTagSplashHost:     cfg.host = v
+        // ── Splash 1.3.x–1.7.1 新增外露项的 free-text 入口
+        case kTagSplashThinkingBudget: cfg.thinkingTokenBudget = v
         // ── MLX 26.10.1 新增的 free-text 入口
         case kTagMlxOsReserveGib:    cfg.mlx.osReserveGib = v
         case kTagMlxMtpDepth:        cfg.mlx.mtpDepth = v
@@ -3307,6 +3769,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case kTagQueueSize:      return ("Custom queue size", "requests admitted at once, e.g. 8", cfg.queueSize)
         case kTagAllowedOrigin:  return ("Custom allowed origin", "e.g. tauri://localhost or *", cfg.allowedOrigin)
         case kTagCacheDir:       return ("Custom cache directory", "folder for --persistent-cache", cfg.cacheDir)
+        // ── Splash 1.3.x–1.7.1 新增外露项
+        case kTagSplashThinkingBudget: return ("Custom thinking token budget", "max thinking tokens per request, e.g. 8192", cfg.thinkingTokenBudget)
         // ── MLX 26.10.1 新增
         case kTagMlxOsReserveGib: return ("Custom OS free-RAM reserve", "GiB, e.g. 8; 0 turns it off", cfg.mlx.osReserveGib)
         case kTagMlxMtpDepth:    return ("Custom MTP draft depth", "tokens per MTP round, e.g. 4", cfg.mlx.mtpDepth)
@@ -3443,7 +3907,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// 判定与 rebuildMenu() 里的 isEnabled 走同一套 MenuPolicy，保证两边永不打架。
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         let snap = Snapshot(served: st.up, owned: Service.managed,
-                            paused: Service.paused, starting: starting)
+                            paused: Service.paused, starting: starting, stopping: stopping)
         let p = MenuPolicy(s: snap)
         let a = menuItem.action
 
@@ -3460,7 +3924,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if let flag = flagForTag(menuItem.tag), !Service.flagAvailable(flag) { return false }
         // 模型包没带对应部件的参数同样不许点（与 gatedSubmenu 的第二道门同源）
         if let gate = capGateForTag(menuItem.tag),
-           !gate.present(in: modelCaps(cfg.mlx.resolvedModelPath)) { return false }
+           !gate.present(in: modelCaps(currentModelPackPath)) { return false }
         return true
     }
 
@@ -3583,7 +4047,7 @@ func runCLI(_ argv: [String]) -> Bool {
         Thread.sleep(forTimeInterval: 3)
         print("http: \(Service.status().up ? "ok" : "no response")")
     case "--stop":
-        print(Service.stop())
+        print(Service.stop(cfg: cfg))
     case "--restart":
         print(Service.restart(cfg: cfg))
     case "--states":
@@ -3593,6 +4057,7 @@ func runCLI(_ argv: [String]) -> Bool {
             ("running (managed)", Snapshot(served: true,  owned: true,  paused: false, starting: false)),
             ("paused (managed)", Snapshot(served: false, owned: true,  paused: true,  starting: false)),
             ("starting (loading)", Snapshot(served: false, owned: true,  paused: false, starting: false)),
+            ("stopping (flushing)", Snapshot(served: true,  owned: true,  paused: false, starting: false, stopping: true)),
             ("external process", Snapshot(served: true,  owned: false, paused: false, starting: false)),
         ]
         print(pad("state", 20) + pad("start", 8) + pad("pause", 8) + pad("stop", 8) + pad("restart", 8) + pad("take", 8) + "WebUI")
