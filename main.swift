@@ -1,4 +1,4 @@
-//  Splash-MLX — macOS 菜单栏常驻控制器，可择一管理 Splash 或 mlx-serve 推理引擎：
+//  Splash-MLX — macOS 菜单栏常驻控制器，可择一管理 Splash / mlx-serve / mfluxible（图像）推理引擎：
 //  选中哪个引擎，就显示哪个引擎的菜单，并把启停/参数作用于它。
 //  纯 AppKit 实现（无窗口、无 Dock 图标）。
 //  服务以独立会话（setsid）子进程方式拉起，菜单栏 App 退出后服务继续运行。
@@ -112,6 +112,13 @@ private var kSplashBin: String { kSplashBinResolved ?? "/opt/homebrew/bin/splash
 private let kMlxBinResolved: String? = resolveEngineBinary("mlx-serve", envOverride: "MLX_SERVE_BIN",
     extraDirs: [homeURL().path + "/.local/lib/mlx-serve", homeURL().path + "/.local/bin"])
 private var kMlxBin: String { kMlxBinResolved ?? (homeURL().path + "/.local/lib/mlx-serve/mlx-serve") }
+
+/// mfluxible-server 的位置：复用同一套「任意位置探测」，extraDirs 补官方 venv 安装位
+/// ~/.mfluxible/venv/bin（用 homeURL() 拼，不写死用户目录）。找不到时退回该 venv 路径，
+/// 让上层按「未安装」处理并给出安装指引。
+private let kMfluxibleBinResolved: String? = resolveEngineBinary("mfluxible-server", envOverride: "MFLUXIBLE_BIN",
+    extraDirs: [homeURL().path + "/.mfluxible/venv/bin"])
+private var kMfluxibleBin: String { kMfluxibleBinResolved ?? (homeURL().path + "/.mfluxible/venv/bin/mfluxible-server") }
 
 /// 引擎进程的 PATH：把它自己所在目录放最前，再接全部探测目录。
 /// 这样无论引擎装在哪个 prefix，它自己拉起的子进程都能找到同伴（splash 的 python 尤其依赖这个）。
@@ -423,40 +430,48 @@ enum Thermal {
 enum Engine: String, Codable, CaseIterable {
     case splash
     case mlx
+    case mfluxible
 
     var displayName: String {
         switch self {
-        case .splash: return "Splash"
-        case .mlx:    return "MLX Serve"
+        case .splash:    return "Splash"
+        case .mlx:       return "MLX Serve"
+        case .mfluxible: return "Mfluxible (Image)"
         }
     }
 
     var defaultPort: String {
         switch self {
-        case .splash: return "8000"
-        case .mlx:    return "11234"
+        case .splash:    return "8000"
+        case .mlx:       return "11234"
+        case .mfluxible: return "8420"
         }
     }
 
-    /// 健康检查端点。Splash 是 `/status`，mlx-serve 是 `/health`。
+    /// 健康检查端点。Splash 是 `/status`，mlx-serve 与 mfluxible 是 `/health`。
     var healthPath: String {
         switch self {
-        case .splash: return "/status"
-        case .mlx:    return "/health"
+        case .splash:    return "/status"
+        case .mlx:       return "/health"
+        case .mfluxible: return "/health"
         }
     }
 
     /// 能力探测要跑的命令。Splash 的 serve 参数在 `serve --help` 里；
     /// mlx-serve 的 flag 全在顶层 `--help` 里（`serve` 只是子命令）。
+    /// mfluxible 没有 serve-flag 语义（配置全走 env），serveFlags() 对它直接返回
+    /// 固定小集合、不会真跑这里，保留 ["--help"] 只为语义完整。
     var helpArguments: [String] {
         switch self {
-        case .splash: return ["serve", "--help"]
-        case .mlx:    return ["--help"]
+        case .splash:    return ["serve", "--help"]
+        case .mlx:       return ["--help"]
+        case .mfluxible: return ["--help"]
         }
     }
 
-    /// 已安装版本查询的参数。两者都接受 --version，但输出格式不同：
-    /// Splash → "Splash 1.0.1"（取最后一个 token）；mlx-serve → 首行 "mlx-serve 26.9.5"（取第二个）。
+    /// 已安装版本查询的参数。三者都接受 --version，但输出格式不同：
+    /// Splash → "Splash 1.0.1"（取最后一个 token）；mlx-serve → 首行 "mlx-serve 26.9.5"（取第二个）；
+    /// mfluxible → "mfluxible 0.9.3"（实测确认，定位首 token 为 mfluxible 的行取第二个）。
     var versionArguments: [String] { ["--version"] }
 }
 
@@ -466,8 +481,9 @@ var activeEngine: Engine = .splash
 /// 当前引擎的可执行文件
 var engineBin: String {
     switch activeEngine {
-    case .splash: return kSplashBin
-    case .mlx:    return kMlxBin
+    case .splash:    return kSplashBin
+    case .mlx:       return kMlxBin
+    case .mfluxible: return kMfluxibleBin
     }
 }
 
@@ -492,6 +508,10 @@ func applyConfig(_ cfg: Config) {
     case .mlx:
         syncPort(cfg.mlx.port)
         activeModelDirOverride = cfg.mlx.modelDir
+    case .mfluxible:
+        syncPort(cfg.mfluxible.port)
+        // 图像引擎没有「本地模型目录覆盖」语义（模型由引擎按需下载到 HF 缓存），清空覆盖
+        activeModelDirOverride = ""
     }
 }
 
@@ -672,6 +692,255 @@ private let kTagMlxAblationProfiles  = 101  // --ablation-profiles（隐藏，�
 private let kTagMlxAblationKeyFile   = 102  // --ablation-key-file（隐藏）
 private let kTagMlxWiredMarginGib    = 103  // --wired-margin-gib（隐藏，源码隐藏旋钮，非公开契约）
 
+/// mfluxible（图像引擎）专属参数。tag 从 105 起（既有最大 104，99 = kInfoTag，全局不重号）。
+/// **不进 kGatedParams / kMlxGatedParams**：那两张表是 LLM serve-flag 门控专属，
+/// mfluxible 的配置全走环境变量，没有 flag 可探测，菜单也不走 gatedSubmenu。
+private let kTagMfluxModel      = 105  // MFLUXIBLE_MODEL
+private let kTagMfluxQuantize   = 106  // MFLUXIBLE_QUANTIZE
+private let kTagMfluxLoraPaths  = 107  // MFLUXIBLE_LORA_PATHS
+private let kTagMfluxLoraScales = 108  // MFLUXIBLE_LORA_SCALES
+private let kTagMfluxPort       = 109  // MFLUXIBLE_PORT
+private let kTagMfluxOutputDir  = 110  // MFLUXIBLE_OUTPUT_DIR
+
+/// mfluxible 的模型清单探测脚本（Python，跑在引擎自带 venv 里）。
+///
+/// **为什么不在 Swift 里硬编码 28 条 repo 映射**：那份表会随引擎升级漂移，
+/// 变成第二份需要人工同步的真相。这里让引擎自己回答：`mfluxible.models.MODELS`
+/// 给出 key→repo，`ModelRevisions` 给出每个 repo 钉死的 commit，
+/// `PathResolution` 给出「快照算不算完整」的判据 —— 全部取自引擎源码，零重复维护。
+///
+/// **为什么不 import 各家族的模型类**：那会拉进 transformers/torch（实测 3–12s/家族）。
+/// 改为只把 `get_download_patterns` 这一个 staticmethod 连同它读的类常量抽出来编译执行
+/// （AST 取源码片段），拿到与引擎逐字一致的 allow_patterns，全程不 import 模型、不联网、
+/// 不加载权重。变体分支（Krea-2 Turbo 的根文件 vs Raw 的 transformer/、
+/// Iris Turbo vs Base）也按引擎自己的选择函数判定。
+///
+/// 完整性判定直接调 `PathResolution._is_snapshot_complete`，与引擎加载时的判据同一份代码：
+/// 缺组件、只有 .incomplete、分片索引指向的分片不在盘上、非 pinned commit —— 都不算已下载。
+/// Anima / Iris 这类上游 ComfyUI 单文件布局另按其 *_DIR / *_FILE(S) / *_PATTERN 常量判定。
+///
+/// 输出：每行 `key<TAB>repo`，只含**本机已完整下载**的模型。没有就什么都不输出。
+/// 任何异常（venv 缺失 / 引擎升级改了内部结构）都以非 0 退出，调用方退回空列表。
+private let kMfluxibleProbeScript = """
+import ast, importlib.util, pathlib, sys
+TAB = chr(9)
+try:
+    from mfluxible.models import MODELS
+    from mflux.models.common.resolution.model_revisions import ModelRevisions
+    from mflux.models.common.resolution.path_resolution import PathResolution
+    MR = pathlib.Path(importlib.util.find_spec("mflux").submodule_search_locations[0])
+    SR = pathlib.Path(importlib.util.find_spec("mfluxible").submodule_search_locations[0])
+except Exception:
+    sys.exit(1)
+HUB = pathlib.Path(sys.argv[1])
+
+def tree_of(p):
+    try:
+        return ast.parse(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+def modfile(dotted):
+    rel = dotted.replace(".", "/")
+    for c in (MR.parent / (rel + ".py"), MR.parent / rel / "__init__.py"):
+        if c.is_file():
+            return c
+    return None
+
+CLASSES, CHOOSERS, INDEXED = {}, {}, set()
+
+def index_family(fam):
+    if fam in INDEXED:
+        return
+    INDEXED.add(fam)
+    for f in (MR / "models" / fam).glob("**/*.py"):
+        t = tree_of(f)
+        if t is None:
+            continue
+        for c in ast.walk(t):
+            if not isinstance(c, ast.ClassDef):
+                continue
+            if c.name.endswith("WeightDefinition"):
+                CLASSES.setdefault(c.name, (c, f))
+            for fn in c.body:
+                if isinstance(fn, ast.FunctionDef) and fn.name == "weight_definition":
+                    CHOOSERS.setdefault(c.name, (fn, f))
+
+def const_ns(cdef):
+    ns = {}
+    for st in cdef.body:
+        tgt = st.targets if isinstance(st, ast.Assign) else ([st.target] if isinstance(st, ast.AnnAssign) else [])
+        for t in tgt:
+            if isinstance(t, ast.Name):
+                try:
+                    ns[t.id] = ast.literal_eval(st.value)
+                except Exception:
+                    pass
+    return ns
+
+def run_fn(fn, f, ns, **kw):
+    body = ast.Module(body=[ast.FunctionDef(name="f", args=fn.args, body=fn.body,
+                                            decorator_list=[], returns=None, type_comment=None)],
+                      type_ignores=[])
+    ast.fix_missing_locations(body)
+    g = dict(ns)
+    try:
+        exec(compile(body, str(f), "exec"), g)
+        return g["f"](**kw)
+    except Exception:
+        return None
+
+class Stub:
+    def __init__(self, spec, cfgname):
+        self.supports_guidance = spec.supports_guidance
+        self.model_name = cfgname
+        self.base_model = None
+        self.transformer_overrides = {}
+        self.text_encoder_overrides = {}
+
+def patterns_for(cname, cfgname, seen=None):
+    seen = seen if seen is not None else set()
+    if cname in seen or cname not in CLASSES:
+        return None
+    seen.add(cname)
+    cdef, f = CLASSES[cname]
+    ns = const_ns(cdef)
+    ns[cname] = type(cname, (), dict(ns))
+    fn = next((n for n in cdef.body if isinstance(n, ast.FunctionDef) and n.name == "get_download_patterns"), None)
+    if fn is None:
+        for b in cdef.bases:
+            bn = b.id if isinstance(b, ast.Name) else getattr(b, "attr", None)
+            if bn:
+                r = patterns_for(bn, cfgname, seen)
+                if r:
+                    return r
+        return None
+    kw = {"model_name": cfgname} if any(a.arg == "model_name" for a in fn.args.args) else {}
+    out = run_fn(fn, f, ns, **kw)
+    return [p for p in out if isinstance(p, str)] if out else None
+
+def pick_class(spec, cfgname, dotted):
+    mod = dotted.split(":")[0]
+    parts = mod.split(".")
+    fam = parts[2] if len(parts) > 2 else ""
+    index_family(fam)
+    famroot = ".".join(parts[:3])
+    direct, imported, mods, seen_mods = [], [], [mod], set()
+    while mods:
+        m = mods.pop(0)
+        if m in seen_mods:
+            continue
+        seen_mods.add(m)
+        f = modfile(m)
+        t = tree_of(f) if f else None
+        if t is None:
+            continue
+        for n in ast.walk(t):
+            if isinstance(n, ast.keyword) and n.arg == "weight_definition":
+                v = n.value
+                if isinstance(v, ast.Call):
+                    v = v.func
+                if isinstance(v, ast.Attribute):
+                    owner = v.value.id if isinstance(v.value, ast.Name) else None
+                    if owner and owner in CHOOSERS:
+                        cfn, cf = CHOOSERS[owner]
+                        got = run_fn(cfn, cf, {"model_config": Stub(spec, cfgname)})
+                        if got is not None:
+                            direct.append(getattr(got, "__name__", str(got)))
+                    v = v.value
+                if isinstance(v, ast.Name) and v.id.endswith("WeightDefinition"):
+                    direct.append(v.id)
+            if isinstance(n, ast.ImportFrom) and n.module:
+                for al in n.names:
+                    if al.name.endswith("WeightDefinition"):
+                        imported.append(al.name)
+                    elif al.name.endswith("Initializer"):
+                        mods.append(n.module + "." + al.name)
+                if n.module.startswith(famroot):
+                    mods.append(n.module)
+                    for al in n.names:
+                        mods.append(n.module + "." + al.name)
+    for n in direct + imported:
+        if n in CLASSES:
+            return n
+    return None
+
+def source_patterns(cname):
+    if cname not in CLASSES:
+        return []
+    cdef, _ = CLASSES[cname]
+    ns = const_ns(cdef)
+    out = []
+    for k, v in ns.items():
+        if k.endswith("_PATTERN") and isinstance(v, str):
+            out.append(v)
+    for k, v in ns.items():
+        if not k.endswith("_FILES") or not isinstance(v, dict):
+            continue
+        d = ns.get(k[:-len("_FILES")] + "_DIR", "")
+        for fn in v.values():
+            if isinstance(fn, str):
+                out.append((d + "/" + fn).lstrip("/"))
+    for k, v in ns.items():
+        if not k.endswith("_FILE") or not isinstance(v, str):
+            continue
+        d = ns.get(k[:-len("_FILE")] + "_DIR", "")
+        out.append((d + "/" + v).lstrip("/"))
+    return out
+
+src = tree_of(SR / "models.py")
+if src is None:
+    sys.exit(1)
+loaders, spec_loader, spec_cfg = {}, {}, {}
+for n in ast.walk(src):
+    if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call) and getattr(n.value.func, "id", "") == "_loader":
+        a = n.value.args[0] if n.value.args else None
+        if isinstance(a, ast.Constant) and isinstance(a.value, str):
+            for t2 in n.targets:
+                if isinstance(t2, ast.Name):
+                    loaders[t2.id] = a.value
+    if isinstance(n, ast.FunctionDef) and n.name.startswith("_load_"):
+        for c in ast.walk(n):
+            if isinstance(c, ast.ImportFrom) and c.module and ".variants." in c.module:
+                for al in c.names:
+                    loaders[n.name] = c.module + ":" + al.name
+                break
+    if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "ModelSpec":
+        kw = {k.arg: k.value for k in n.keywords}
+        k, lv = kw.get("key"), kw.get("load")
+        cfgname = ""
+        if isinstance(lv, ast.Call):
+            if lv.args and isinstance(lv.args[0], ast.Constant):
+                cfgname = lv.args[0].value
+            lv = lv.func
+        if isinstance(k, ast.Constant):
+            if isinstance(lv, ast.Name):
+                spec_loader[k.value] = lv.id
+            spec_cfg[k.value] = cfgname
+
+for s in MODELS:
+    pin = ModelRevisions.get(s.repo) or ""
+    d = HUB / ("models--" + s.repo.replace("/", "--")) / "snapshots"
+    snaps = [d / pin] if pin else (sorted(d.iterdir()) if d.is_dir() else [])
+    snaps = [p for p in snaps if p.is_dir()]
+    if not snaps:
+        continue
+    cfgname = spec_cfg.get(s.key, "")
+    dotted = loaders.get(spec_loader.get(s.key, ""), "")
+    cname = pick_class(s, cfgname, dotted) if dotted else None
+    pats = patterns_for(cname, cfgname) if cname else None
+    if not pats:
+        continue
+    subs = PathResolution._get_required_subdirs_with_safetensors(pats)
+    ok = any(PathResolution._is_snapshot_complete(p, subs, pats) for p in snaps)
+    if not ok:
+        sp = source_patterns(cname)
+        if sp:
+            ok = any(PathResolution._patterns_satisfied(p, sp) for p in snaps)
+    if ok:
+        print(TAB.join([s.key, s.repo]))
+"""
+
 /// mlx-serve 26.10.1 起支持 `--api-key-env <VAR>`：密钥从环境变量读，
 /// 不再出现在 argv 里（进程表全机可读，`--api-key` 传明文密钥等于挂在橱窗里）。
 /// serveArguments 里传的名字和 Service.start 注入的必须一致 —— 单一真相放这里。
@@ -775,6 +1044,16 @@ private var pidURL:        URL { appSupportDir.appendingPathComponent("splash-ml
 private var logOutPath: String { homeURL().appendingPathComponent("Library/Logs/splashmlx.out.log").path }
 private var logErrPath: String { homeURL().appendingPathComponent("Library/Logs/splashmlx.err.log").path }
 
+/// mfluxible 的日志按端口落到它自己的安装目录（~/.mfluxible/logs/），与 LLM 引擎的
+/// ~/Library/Logs 分开。stdout/stderr 合并写同一文件：uvicorn 访问日志与模型下载/量化
+/// 进度交错出现，拆两个文件反而难排查。
+private var mfluxibleLogPath: String {
+    homeURL().appendingPathComponent(".mfluxible/logs/mfluxible-\(activePort).log").path
+}
+/// 当前引擎的日志路径（启动重定向 / View runtime log / About 共用这一份真相）
+private var engineLogOutPath: String { activeEngine == .mfluxible ? mfluxibleLogPath : logOutPath }
+private var engineLogErrPath: String { activeEngine == .mfluxible ? mfluxibleLogPath : logErrPath }
+
 /// 用户手动指定的模型目录（空 = 自动发现）。
 /// 下面的路径变量和 Service 一样是全局的、拿不到 AppDelegate 的 cfg，
 /// 所以由 applyConfig 统一同步进来。每个引擎各存一个。
@@ -818,6 +1097,9 @@ private var engineModelsDir: URL {
     switch activeEngine {
     case .splash: return splashModelsDir
     case .mlx:    return mlxModelsDir
+    // 图像引擎的模型权重由引擎按需下载到 HF 缓存（量化副本另在 ~/.cache/mfluxible），
+    // 没有自己的模型库目录 —— Open models folder 指向 HF 缓存最有意义
+    case .mfluxible: return hfHubDir
     }
 }
 
@@ -896,6 +1178,137 @@ private var hfHubDir: URL {
     }
     return homeURL().appendingPathComponent(".cache/huggingface/hub")
 }
+
+// ==== MFLUXIBLE-MODELS-BEGIN ====
+/// mfluxible 的「本机已下载模型」探测。**与两个 LLM 引擎同一原则：只列本机真有的，
+/// 绝不列引擎支持的幻影清单。**
+///
+/// 与 LLM 侧的差异在于 mfluxible 没有 `list` 子命令，且它的模型 key（qwen-image-2.1）
+/// 与 HF repo（Qwen/Qwen-Image-2.1）不是一回事，所以必须：
+///   ① 扫 hfHubDir 的 models--<owner>--<name>/snapshots/<pinned-commit>/；
+///   ② 判完整性（缺组件 / .incomplete / 分片缺失都不算）；
+///   ③ 把 repo 反查成 key。
+/// ②③ 全部交给引擎自己的源码回答（见 kMfluxibleProbeScript），Swift 侧不留第二份映射表。
+///
+/// **线程纪律照抄 Thermal**：探测要 spawn 一个 Python 进程（空缓存实测 ~0.15s，
+/// 命中缓存 ~0.5s），菜单渲染在主线程，绝不能在那里等 —— 所以探测只在后台 tick() 里做，
+/// 主线程只读缓存。缓存未就绪时返回空列表，由 modelItems 显示 "(no downloaded models)"，
+/// 一秒内自动补上真实清单。
+enum MfluxibleModels {
+    /// 清单缓存复用 installedModels 的 60 秒口径（模型库很少变）。
+    static let minInterval: TimeInterval = 60.0
+
+    private static var cache: [String] = []
+    private static var lastProbeAt = Date.distantPast
+    private static var inflight = false
+    /// 是否已完成过至少一次探测。用它区分"还没探测"与"探测过、本机确实没有"。
+    private static var resolved = false
+    private static let lock = NSLock()
+
+    /// 主线程安全：只读缓存，永不 spawn。
+    static var current: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return cache
+    }
+
+    /// 是否已探测过（CLI 用它决定要不要同步等一次结果）
+    static var isResolved: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return resolved
+    }
+
+    /// 换引擎 / 换模型目录 / 改 HF 缓存位置后调用，强制下次重新探测。
+    static func invalidate() {
+        lock.lock(); defer { lock.unlock() }
+        lastProbeAt = .distantPast
+        resolved = false
+    }
+
+    /// CLI 专用：把同步探测的结果记进缓存，让同一进程内的后续调用直接复用
+    /// （--dump-menu 会构建两遍菜单）。App 路径不走这里 —— 它由 tick 写缓存。
+    static func storeForCLI(_ list: [String]) {
+        lock.lock(); defer { lock.unlock() }
+        cache = list
+        resolved = true
+        lastProbeAt = Date()
+    }
+
+    /// 后台触发一次探测。已在飞或未到节流窗口就直接返回，避免堆叠子进程。
+    static func tick() {
+        lock.lock()
+        if inflight || Date().timeIntervalSince(lastProbeAt) < minInterval {
+            lock.unlock(); return
+        }
+        inflight = true
+        lastProbeAt = Date()
+        lock.unlock()
+        DispatchQueue.global(qos: .utility).async {
+            let list = probeSync()
+            lock.lock()
+            cache = list
+            resolved = true
+            inflight = false
+            lock.unlock()
+        }
+    }
+
+    /// 同步探测（CLI 与后台 tick 共用）。任何失败都退回空列表 —— 不报错、不列幻影。
+    static func probeSync() -> [String] {
+        // 必须用 **venv 里的** python：它靠 pyvenv.cfg 自己定位 site-packages。
+        // 不能解析软链后直接跑 uv 托管解释器再靠 PYTHONPATH 补 —— 实测 `-I`/`-E`
+        // 都会连 PYTHONPATH 一起忽略（隔离模式的语义），那样必然 ModuleNotFoundError。
+        guard let python = mfluxiblePython() else { return [] }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: python)
+        // -s：跳过用户 site-packages（~/.local/lib/...），只认 venv 自己的包，
+        // 避免用户全局装的另一个 mflux 版本干扰判定。
+        p.arguments = ["-s", "-c", kMfluxibleProbeScript, hfHubDir.path]
+        var env = ProcessInfo.processInfo.environment
+        // 只读探测，绝不触发网络：HF/transformers 全离线，且钉在我们要扫的那个缓存上
+        env["HF_HUB_OFFLINE"] = "1"
+        env["TRANSFORMERS_OFFLINE"] = "1"
+        env["HF_HUB_CACHE"] = hfHubDir.path
+        env["HOME"] = homeURL().path
+        // 清掉可能把包解析引到别处的外部变量（venv 自身路径不受影响）
+        env.removeValue(forKey: "PYTHONPATH")
+        env.removeValue(forKey: "PYTHONHOME")
+        p.environment = env
+        let outPipe = Pipe(), errPipe = Pipe()
+        p.standardOutput = outPipe
+        p.standardError = errPipe
+        do { try p.run() } catch { return [] }
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        _ = errPipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else { return [] }
+        let text = String(data: outData, encoding: .utf8) ?? ""
+        var out = Set<String>()
+        for line in text.split(separator: "\n") {
+            // 每行 key<TAB>repo；只取 key。同 repo 多 key（Anima 三个变体共用
+            // circlestone-labs/Anima、iris 两个共用 speridlabs/iris-3b）时**全部列出** ——
+            // 它们是同一个 repo 里的不同权重文件，本机既然有整包，就都能跑，
+            // 藏起来反而让用户以为要另外下载。
+            let key = line.split(separator: "\t", maxSplits: 1).first.map(String.init) ?? ""
+            let trimmed = key.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty { out.insert(trimmed) }
+        }
+        return out.sorted()
+    }
+
+    /// venv 里的 python 解释器：与 mfluxible-server 同目录（MFLUXIBLE_BIN 覆盖时也跟随）。
+    /// **保留 venv 内的软链路径本身**，不解析成 uv 托管解释器 —— venv 的包定位靠
+    /// 可执行文件所在位置旁边的 pyvenv.cfg，解析软链会丢掉这个上下文。
+    private static func mfluxiblePython() -> String? {
+        let binDir = (kMfluxibleBin as NSString).deletingLastPathComponent
+        for name in ["python3", "python"] {
+            let p = (binDir as NSString).appendingPathComponent(name)
+            // isExecutableFile 跟随软链：软链断了就是 false，正好当"venv 不可用"处理
+            if FileManager.default.isExecutableFile(atPath: p) { return p }
+        }
+        return nil
+    }
+}
+// ==== MFLUXIBLE-MODELS-END ====
 
 // MARK: - 配置
 
@@ -1279,11 +1692,65 @@ struct MLXConfig: Codable {
     }
 }
 
+/// mfluxible（图像生成引擎）的专属设置。仿 MLXConfig 模式：每引擎一套、切引擎各自带出。
+///
+/// 与 LLM 引擎的根本差异：**配置全走环境变量，没有 serve flag**。
+/// LoRA 是启动时 bake 进模型的，换模型/LoRA/量化 = 重启进程（每个组合独立量化缓存），
+/// 所以改这些字段后必须重启才生效（菜单复用 askRestart 语义）。
+struct MfluxibleConfig: Codable {
+    /// 模型 key（MFLUXIBLE_MODEL 合法值）。默认 qwen-image-2.1（用户选定）。
+    /// 菜单只列本机已下载的 key（见 mfluxibleInstalledModels）；未下载的只能手填。
+    /// 首次加载要把权重量化进 ~/.cache/mfluxible（分钟级），/health 的 model_loaded
+    /// 变 true 前都不能生成。
+    var model: String = "qwen-image-2.1"
+    /// 量化位数："8"（默认）/ "4" / "none"（不量化，全精度）。
+    var quantize: String = "8"
+    /// 本地 LoRA .safetensors 路径，逗号分隔多个。留空 = 不注入。启动时 bake 进模型。
+    var loraPaths: String = ""
+    /// 与 loraPaths 一一对应的缩放系数（逗号分隔）。留空 = 引擎默认。条数不匹配会启动报错。
+    var loraScales: String = ""
+    var port: String = "8420"
+    /// 监听地址。与两个 LLM 引擎同一立场：默认只绑本机。
+    var host: String = "127.0.0.1"
+    /// 生成图片落盘目录。留空 = 不注入，用引擎默认 ~/Pictures/mfluxible。
+    var outputDir: String = ""
+
+    init() {}
+
+    /// 同 Config / MLXConfig：任一字段缺失都退回默认，不整体丢弃
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        model      = (try? c.decode(String.self, forKey: .model)) ?? model
+        quantize   = (try? c.decode(String.self, forKey: .quantize)) ?? quantize
+        loraPaths  = (try? c.decode(String.self, forKey: .loraPaths)) ?? loraPaths
+        loraScales = (try? c.decode(String.self, forKey: .loraScales)) ?? loraScales
+        port       = (try? c.decode(String.self, forKey: .port)) ?? port
+        // 空串等于引擎默认 0.0.0.0 的风险不存在（mfluxible 默认就是 127.0.0.1），
+        // 但为与 mlx 侧同一纪律，空串仍迁移成只绑本机
+        let rawHost = (try? c.decode(String.self, forKey: .host)) ?? host
+        host = rawHost.isEmpty ? "127.0.0.1" : rawHost
+        outputDir  = (try? c.decode(String.self, forKey: .outputDir)) ?? outputDir
+    }
+
+    /// 启动参数：mfluxible-server 只认 --host/--port/--config/--reload/--version，
+    /// 其余配置全走环境变量（见 Service.start 的 mfluxible 分支）。
+    /// host/port 用显式 flag 而非 env：argv 可见可排查，且 flag 优先于 env/TOML，
+    /// 避免残留环境里的旧值悄悄改掉监听地址。
+    var serveArguments: [String] {
+        var a: [String] = []
+        if !host.isEmpty { a += ["--host", host] }
+        if !port.isEmpty { a += ["--port", port] }
+        return a
+    }
+}
+
 final class Config: Codable {
     /// 当前选中的引擎。两套配置各自独立保存，切换时带出各自的设置
     var engine: Engine = .splash
     /// mlx-serve 的专属设置（engine == .mlx 时生效）
     var mlx = MLXConfig()
+    /// mfluxible（图像引擎）的专属设置（engine == .mfluxible 时生效）
+    var mfluxible = MfluxibleConfig()
     /// Splash 默认模型。**1.3.1 起 incoai/*-Splash 包彻底不加载**（官方 Breaking change），
     /// 改用官方指定的等权重 MLX 替代仓库；老配置里的旧包名在 init(from:) 做迁移映射。
     var model: String = "mlx-community/Qwen3.8-27B-4bit"
@@ -1426,6 +1893,8 @@ final class Config: Codable {
         // 引擎选择：老配置文件没有这个字段，退回 splash（保持既有行为不变）
         engine            = (try? c.decode(Engine.self, forKey: .engine)) ?? engine
         mlx               = (try? c.decode(MLXConfig.self, forKey: .mlx)) ?? mlx
+        // 老配置没有 mfluxible 键：退回默认值，不影响其他字段（逐字段回退纪律）
+        mfluxible         = (try? c.decode(MfluxibleConfig.self, forKey: .mfluxible)) ?? mfluxible
         model             = (try? c.decode(String.self, forKey: .model)) ?? model
         // 老配置迁移：Splash 1.3.1 起 incoai/*-Splash 包彻底不加载，官方指定等权重替代。
         // 必须在解码层映射：否则老配置原样读出仍崩，且 splashInstalledModels 会把坏值塞回清单。
@@ -1510,8 +1979,9 @@ final class Config: Codable {
     /// 就把用户存好的配置悄悄丢掉。
     var serveArguments: [String] {
         switch engine {
-        case .splash: return splashServeArguments
-        case .mlx:    return mlx.serveArguments
+        case .splash:    return splashServeArguments
+        case .mlx:       return mlx.serveArguments
+        case .mfluxible: return mfluxible.serveArguments
         }
     }
 
@@ -1662,9 +2132,11 @@ private func spawnDetached(_ argv: [String], env: [String: String]) -> pid_t? {
 
     var actions: posix_spawn_file_actions_t?
     posix_spawn_file_actions_init(&actions)
-    posix_spawn_file_actions_addopen(&actions, 1, logOutPath,
+    // 日志重定向按引擎分发：LLM 引擎仍落 ~/Library/Logs（行为不变），
+    // mfluxible 落 ~/.mfluxible/logs/mfluxible-<port>.log（stdout/stderr 合并）
+    posix_spawn_file_actions_addopen(&actions, 1, engineLogOutPath,
                                      O_WRONLY | O_CREAT | O_APPEND, 0o644)
-    posix_spawn_file_actions_addopen(&actions, 2, logErrPath,
+    posix_spawn_file_actions_addopen(&actions, 2, engineLogErrPath,
                                      O_WRONLY | O_CREAT | O_APPEND, 0o644)
 
     let argvPtr = argv.map { strdup($0) } + [nil]
@@ -1703,6 +2175,15 @@ struct Status {
     /// 实测 900 token 的生成只占 1 个窗口，11 个窗口里 10 个算出来是 0。
     /// 所以必须沿用上次实测值并标明年龄，否则菜单几乎永远显示 0。
     var tpsStaleSeconds: Double = -1
+
+    // ── mfluxible（图像引擎）侧：/health 的模型就绪状态与展示信息。
+    // 图像生成没有 tok/s 语义，速率行改报模型名/量化/内存（见 speedLineText）。
+    /// model_loaded=false 表示还在下载/量化（首次可能很久），true 才可生成
+    var imageModelLoaded = false
+    /// /health 的 model.name（引擎实际在跑的模型 key）
+    var imageModelName = ""
+    /// 量化档位文案："8-bit" / "4-bit" / "full"（/health 的 quantize=null 即不量化）
+    var imageQuantize = ""
 }
 
 /// 进程内 HTTP GET（同步包装 URLSession），返回 (状态, 响应体)。
@@ -1885,6 +2366,15 @@ enum Service {
                         installedCache = String(t[1]); break
                     }
                 }
+            case .mfluxible:
+                // 实测 0.9.3 输出单行 "mfluxible 0.9.3"：定位首 token 为 mfluxible 的行取第二个。
+                // 不取"最后一个 token"：venv 包装脚本将来可能多打一行警告，逐行定位更稳。
+                for line in raw.split(separator: "\n") {
+                    let t = line.split(separator: " ")
+                    if t.first == "mfluxible", t.count >= 2 {
+                        installedCache = String(t[1]); break
+                    }
+                }
             }
         }
         return installedCache
@@ -1927,6 +2417,15 @@ enum Service {
     static func serveFlags() -> Set<String> {
         invalidateCachesIfEngineChanged()
         if let c = serveFlagsCache { return c }
+        // mfluxible 没有 serve-flag 语义（配置全走 env/TOML，argv 只有
+        // --host/--port/--config/--reload/--version）：不 spawn --help，直接返回固定小集合。
+        // 非空集 → flagsProbed=true，不会误报"问不到引擎"；LLM 专属 flag 查不到 → false，
+        // 而 mfluxible 的菜单/拼装本来就不走 flag 门控，两边互不干扰。
+        if activeEngine == .mfluxible {
+            let fixed: Set<String> = ["--host", "--port", "--config", "--reload", "--version"]
+            serveFlagsCache = fixed
+            return fixed
+        }
         let r = run(engineBin, activeEngine.helpArguments)
         let text = r.out + r.err
         var flags: Set<String> = []
@@ -1961,15 +2460,23 @@ enum Service {
             return "refusing to start: port \(activePort) is held by an external process (pid \(who)). Stop it first, or use --takeover"
         }
         try? FileManager.default.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
+        // 日志目录按引擎分发：mfluxible 的 ~/.mfluxible/logs 不存在时先创建，
+        // 否则 posix_spawn 的 addopen 会失败、服务起不来
         try? FileManager.default.createDirectory(
-            at: URL(fileURLWithPath: logErrPath).deletingLastPathComponent(),
+            at: URL(fileURLWithPath: engineLogErrPath).deletingLastPathComponent(),
             withIntermediateDirectories: true)
-        FileManager.default.createFile(atPath: logOutPath, contents: nil)
-        FileManager.default.createFile(atPath: logErrPath, contents: nil)
+        FileManager.default.createFile(atPath: engineLogOutPath, contents: nil)
+        FileManager.default.createFile(atPath: engineLogErrPath, contents: nil)
 
         // 加固点四：启动前先确认引擎真的可执行，给出人话报错，
         // 而不是让 posix_spawn 失败后抛一句看不懂的 errno。
         guard FileManager.default.isExecutableFile(atPath: engineBin) else {
+            // 图像引擎给专属安装指引（venv + pip），不崩、不 spawn
+            if activeEngine == .mfluxible {
+                return "engine not found: 未找到 mfluxible-server（\(engineBin)）。"
+                     + "安装：python3.12 -m venv ~/.mfluxible/venv && ~/.mfluxible/venv/bin/pip install mfluxible；"
+                     + "或用 MFLUXIBLE_BIN 指向已有二进制"
+            }
             let hint = activeEngine == .mlx ? "MLX_SERVE_BIN" : "SPLASH_BIN"
             return "engine not found: 未找到 \(activeEngine.displayName) 的可执行文件"
                  + "（已扫 PATH、常见包管理器前缀与 \(hint)，均无可用二进制）"
@@ -1985,6 +2492,29 @@ enum Service {
         if activeEngine == .splash, !cfg.apiKey.isEmpty { env["SPLASH_API_KEY"] = cfg.apiKey }
         if activeEngine == .mlx, !cfg.mlx.apiKey.isEmpty, Service.flagAvailable("--api-key-env") {
             env[kMlxApiKeyEnvVar] = cfg.mlx.apiKey
+        }
+        // mfluxible：配置全走环境变量（没有 serve flag），非空才注入。
+        // LoRA 是启动时 bake 进模型的 —— 换模型/LoRA/量化必须重启进程才生效。
+        if activeEngine == .mfluxible {
+            let m = cfg.mfluxible
+            // 关掉 TOML 发现：我们全走 env，而 env 优先于文件、未识别的 TOML key 又是启动错误，
+            // 显式 none 可避免工作目录/用户配置里残留的 mfluxible.toml 悄悄混入额外键
+            env["MFLUXIBLE_CONFIG"] = "none"
+            if !m.model.isEmpty      { env["MFLUXIBLE_MODEL"] = m.model }
+            if !m.quantize.isEmpty   { env["MFLUXIBLE_QUANTIZE"] = m.quantize }
+            if !m.loraPaths.isEmpty  { env["MFLUXIBLE_LORA_PATHS"] = m.loraPaths }
+            if !m.loraScales.isEmpty { env["MFLUXIBLE_LORA_SCALES"] = m.loraScales }
+            if !m.outputDir.isEmpty  { env["MFLUXIBLE_OUTPUT_DIR"] = m.outputDir }
+            // host/port 同时以 flag 传（见 serveArguments，flag 优先）；env 也注入保持一致
+            if !m.host.isEmpty { env["MFLUXIBLE_HOST"] = m.host }
+            if !m.port.isEmpty { env["MFLUXIBLE_PORT"] = m.port }
+            // **不注入 HF_ENDPOINT**：权重由 ModelScope 预先下好、再摆进 HF 缓存布局
+            // （~/.cache/huggingface/hub/models--<owner>--<name>/snapshots/<pinned-commit>/），
+            // mflux 的 PathResolution 命中 hf_cached 规则直接本地加载，全程不碰网络。
+            // 注入镜像端点反而会让 huggingface_hub 去校验/请求远端，白白触发网络访问。
+            // 只有用户显式手填未下载的 key（Custom model key…）才会走 hf_download，
+            // 那条路径下用户自己在环境里设的 HF_ENDPOINT 由 spawnDetached 之外按需处理，
+            // 这里保持不干预。
         }
 
         let argv = [engineBin] + cfg.serveArguments
@@ -2006,6 +2536,10 @@ enum Service {
         switch (cfg?.engine ?? activeEngine) {
         case .splash:
             return 16.0
+        case .mfluxible:
+            // uvicorn 收 SIGTERM 即优雅退出，没有 LLM 那种 SSD 落盘窗口；
+            // 给 8s 短窗口足够（生成中的请求会被中断，图像引擎无状态可落盘）
+            return 8.0
         case .mlx:
             // 非负整数才采纳（"0" 合法 = 引擎不落盘，立即退）；非法值退回默认 45
             if let raw = cfg?.mlx.shutdownPersistSecs, !raw.isEmpty, let n = Int(raw), n >= 0 {
@@ -2102,6 +2636,30 @@ enum Service {
     static func status() -> Status {
         var s = Status()
         if paused { return s }
+        if activeEngine == .mfluxible {
+            // 图像引擎没有 metrics/速率语义：/health 一个端点就给存活 + 模型就绪 + 内存。
+            // model_loaded=false 表示还在下载/量化（首次可能很久），菜单据此显示 loading。
+            // 与 Splash 路径同一纪律：清掉 MLX 速率基线，避免切回 mlx 时算出离谱差值
+            mlxLiveHistory.removeAll()
+            lastMLXSample = nil
+            let h = httpGet(baseURL + activeEngine.healthPath)
+            guard h.status == 0, let data = h.out.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return s
+            }
+            s.up = true
+            s.imageModelLoaded = (obj["model_loaded"] as? Bool) ?? false
+            if let m = obj["model"] as? [String: Any] {
+                s.imageModelName = (m["name"] as? String) ?? ""
+                // quantize 是整数位数；null（不量化）时 num() 返回 nil → "full"
+                if let q = num(m["quantize"]) { s.imageQuantize = String(format: "%.0f-bit", q) }
+                else { s.imageQuantize = "full" }
+            }
+            if let mem = obj["memory"] as? [String: Any], let b = num(mem["active_bytes"]) {
+                s.residentGB = b / 1_073_741_824.0
+            }
+            return s
+        }
         if activeEngine == .mlx {
             // 顺序很关键：**先取 /metrics.json**。它能解析出 gauges/counters 就同时证明了
             // "服务活着"和"有数据"，于是这次轮询只需 1 个进程而不是 2 个
@@ -2360,6 +2918,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         applyStatusButton()
         // 热状态自带 5 秒节流与"已在飞就跳过"，所以每秒调一次也不会堆叠子进程
         Thermal.tick()
+        // 图像引擎的本机模型清单同理：探测要 spawn python，只能在后台做，
+        // 自带 60 秒节流 + 防堆叠；主线程的 installedModels 只读它的缓存。
+        if activeEngine == .mfluxible { MfluxibleModels.tick() }
         // 展开中的菜单要实时反映新温度，不能等 refresh()（空闲时 5 秒一次）
         updateThermalMenuItem()
         let interval: TimeInterval = busy ? 1.0 : 5.0
@@ -2464,7 +3025,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         if external { menu.addItem(disabled("⚠️ port held by an external process, not managed by Splash-MLX")) }
         if starting { menu.addItem(disabled("⏳ loading model…")) }
-        if stopping { menu.addItem(disabled("⏳ stopping… flushing SSD cache")) }
+        // 图像引擎没有 SSD 落盘窗口，停机文案不套用 LLM 的说法
+        if stopping { menu.addItem(disabled(activeEngine == .mfluxible
+            ? "⏳ stopping…" : "⏳ stopping… flushing SSD cache")) }
         menu.addItem(.separator())
 
         // ── 引擎选择：决定下面整组菜单属于哪个引擎。
@@ -2517,7 +3080,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             settingsItems.append(disabled("Could not query the engine — options left enabled"))
             settingsItems.append(.separator())
         }
-        settingsItems += (activeEngine == .mlx ? mlxSettingsItems() : splashSettingsItems())
+        switch activeEngine {
+        case .splash:    settingsItems += splashSettingsItems()
+        case .mlx:       settingsItems += mlxSettingsItems()
+        case .mfluxible: settingsItems += mfluxibleSettingsItems()
+        }
         // 渐进式披露：引擎没跑起来时不展开 Settings，菜单保持精简。
         // 引擎/模型/启停始终在顶层，所以不会出现"想配置却无处可点"的死锁。
         if running { menu.addItem(submenuItem("Settings", items: settingsItems)) }
@@ -2525,7 +3092,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // ── 打开：5 个入口收进一个子菜单（原来平铺占 5 行）
         let openUI = NSMenuItem(title: "Open Web UI in browser", action: #selector(openWebUI), keyEquivalent: "o")
         openUI.target = self
-        openUI.isEnabled = policy.canOpenUI && !cfg.noWebUI
+        // noWebUI 是 Splash 的 --no-webui 字段；mfluxible 的 GET / harness 是内置的、
+        // 没有关断口，不该被 Splash 的开关连带置灰（baseURL 用 activePort，自然指向 harness）
+        openUI.isEnabled = policy.canOpenUI && (activeEngine == .mfluxible || !cfg.noWebUI)
         let copyURL = NSMenuItem(title: "Copy API base URL", action: #selector(copyBaseURL), keyEquivalent: "c")
         copyURL.target = self
         var openItems: [NSMenuItem] = [openUI, copyURL, .separator()]
@@ -2566,10 +3135,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     /// 状态短标签（和版本号拼在同一行，所以不重复图标之外的信息）
     private func stateLabel() -> String {
-        if stopping { return "stopping (flushing SSD cache…)" }
+        if stopping { return activeEngine == .mfluxible ? "stopping…" : "stopping (flushing SSD cache…)" }
         if Service.paused { return "paused (frozen, memory still held)" }
-        if st.up { return Service.managed ? "running (managed)" : "running (external)" }
-        if Service.managed || starting { return "starting (waiting for model)" }
+        if st.up {
+            // 图像引擎端口通了不等于能生成：/health 的 model_loaded 才是就绪判据。
+            // 实测 uvicorn 在 lifespan 里 await engine.load()，端口是加载完才绑的，
+            // 所以这一支通常只在"进程活着但模型被换掉/释放"时出现，仍如实报告。
+            if activeEngine == .mfluxible && !st.imageModelLoaded {
+                return "loading model (quantizing…)"
+            }
+            return Service.managed ? "running (managed)" : "running (external)"
+        }
+        if Service.managed || starting {
+            // 首次加载要下权重 + 写 q8 量化缓存（分钟级），期间端口根本还没绑上，
+            // /health 不可达。文案必须说清"在加载、要等几分钟"，而不是套用 LLM 的秒级预期。
+            return activeEngine == .mfluxible
+                ? "starting (loading model, may take minutes)"
+                : "starting (waiting for model)"
+        }
         return "stopped"
     }
 
@@ -2814,8 +3397,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         return items
     }
 
-    /// 速率行的文字（两个引擎各一套指标）
+    /// 速率行的文字（每个引擎各一套指标）
     private func speedLineText() -> String {
+        if activeEngine == .mfluxible {
+            // 图像生成没有 tok/s 语义：未就绪时明说在下载/量化，就绪后报模型 + 量化 + 内存
+            guard st.imageModelLoaded else { return "⏳ loading model… (downloading / quantizing)" }
+            let q = st.imageQuantize.isEmpty ? "" : " \(st.imageQuantize)"
+            return String(format: "image engine · %@%@ · memory %.1f GB",
+                          st.imageModelName, q, st.residentGB)
+        }
         if activeEngine == .mlx {
             guard st.metricsAvailable else { return "⏳ no metrics yet — model still loading?" }
             return String(format: "%@ · GPU %.0f%% · memory %.1f GB",
@@ -2825,8 +3415,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                       st.tps, st.accept * 100, st.residentGB)
     }
 
-    /// TTFT 行；MLX 侧没有上下文上限，改报并发队列。无可显示内容时返回 nil
+    /// TTFT 行；MLX 侧没有上下文上限，改报并发队列。无可显示内容时返回 nil。
+    /// 图像引擎没有 TTFT/队列语义，整行不显示。
     private func ttftLineText() -> String? {
+        if activeEngine == .mfluxible { return nil }
         if activeEngine == .mlx {
             guard st.metricsAvailable else { return nil }
             var tail = ""
@@ -2886,21 +3478,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // engineModelsDir 已含"手动指定目录"的覆盖语义，与模型发现同源
         case .splash: return engineModelsDir.appendingPathComponent(cfg.model).path
         case .mlx:    return cfg.mlx.resolvedModelPath
+        // 图像引擎没有本地模型包路径（按需下载到 HF 缓存）；返回空串 → modelCaps fail-open，
+        // 且 mfluxible 菜单本来就不走模型部件门控
+        case .mfluxible: return ""
         }
     }
 
     /// 当前引擎选中的模型。两个引擎各存各的，所以读写都要按引擎分发。
     private var currentModel: String {
         switch activeEngine {
-        case .splash: return cfg.model
-        case .mlx:    return cfg.mlx.model
+        case .splash:    return cfg.model
+        case .mlx:       return cfg.mlx.model
+        case .mfluxible: return cfg.mfluxible.model
         }
     }
 
     private func setCurrentModel(_ m: String) {
         switch activeEngine {
-        case .splash: cfg.model = m
-        case .mlx:    cfg.mlx.model = m
+        case .splash:    cfg.model = m
+        case .mlx:       cfg.mlx.model = m
+        case .mfluxible: cfg.mfluxible.model = m
         }
         cfg.save()
         invalidateModelList()
@@ -2921,7 +3518,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // 配置模型未下载时这里没有勾选项 —— 预期行为，状态栏 KPI 行仍显示配置模型名。
         if models.isEmpty { items.append(disabled("(no downloaded models)")) }
         items.append(.separator())
-        let label = activeEngine == .mlx ? "Custom model (org/repo or path)…" : "Custom owner/repo…"
+        let label: String
+        switch activeEngine {
+        case .mlx:       label = "Custom model (org/repo or path)…"
+        case .splash:    label = "Custom owner/repo…"
+        case .mfluxible: label = "Custom model key…"
+        }
         let custom = NSMenuItem(title: label, action: #selector(pickCustomModel), keyEquivalent: "")
         custom.target = self
         items.append(custom)
@@ -3255,6 +3857,103 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         return items
     }
 
+    /// mfluxible（图像引擎）的参数菜单。**不走 gatedSubmenu / flagForTag**：
+    /// mfluxible 配置全走环境变量，没有 serve flag 可探测，也不受 LLM 的 kGatedParams 门控。
+    /// 换 model/quantize/lora 任一项都会触发 askRestart —— 因为 LoRA 是启动时 bake 进模型的，
+    /// 每个组合独立量化缓存，不重启不生效。port/output dir 改动同样需重启（进程启动时才读）。
+    private func mfluxibleSettingsItems() -> [NSMenuItem] {
+        var items: [NSMenuItem] = []
+        // 顶部一行说明：这些改动都需重启才生效，且首次换模型会触发下载/量化（可能很久）
+        items.append(disabled("Changes apply on restart (model/LoRA baked at startup)"))
+        items.append(.separator())
+
+        items += section("Model & quantization", first: true, [
+            // 只列本机已下载的模型 + Custom 手填兜底。与 Model 主菜单同源
+            // （都走 mfluxibleInstalledModels），两处永不打架。
+            submenuItem("Model  $MFLUXIBLE_MODEL", items: mfluxModelChoiceItems()),
+            submenuItem("Quantize  $MFLUXIBLE_QUANTIZE", items: choiceItems(
+                current: cfg.mfluxible.quantize,
+                options: [("8", "8-bit (default)"), ("4", "4-bit (smaller, lossy)"),
+                          ("none", "none (full precision)")],
+                customLabel: "", tag: kTagMfluxQuantize, custom: false)),
+        ])
+
+        items += section("LoRA (baked at startup)", [
+            submenuItem("LoRA paths  $MFLUXIBLE_LORA_PATHS", items: loraItems(
+                current: cfg.mfluxible.loraPaths, tag: kTagMfluxLoraPaths,
+                customLabel: "Set paths… (.safetensors, comma-separated)")),
+            submenuItem("LoRA scales  $MFLUXIBLE_LORA_SCALES", items: loraItems(
+                current: cfg.mfluxible.loraScales, tag: kTagMfluxLoraScales,
+                customLabel: "Set scales… (comma-separated, one per path)")),
+        ])
+
+        items += section("Serving & output", [
+            submenuItem("Port  $MFLUXIBLE_PORT", items: choiceItems(
+                current: cfg.mfluxible.port,
+                options: [("8420", "8420 (mfluxible default)"), ("8421", "8421"), ("8080", "8080")],
+                customLabel: "Custom… (e.g. 8422)", tag: kTagMfluxPort)),
+            submenuItem("Output dir  $MFLUXIBLE_OUTPUT_DIR", items: outputDirItems()),
+        ])
+
+        return items
+    }
+
+    /// Settings 里 Model 子菜单的条目。**与主菜单 modelItems 同一原则**：
+    /// 只列本机已下载的；一个都没有时给一条禁用信息行，而不是摊开引擎支持的幻影清单。
+    /// Custom model key… 始终保留 —— 手填未下载的 key 是用户的显式动作（会触发下载），
+    /// 与"菜单凭空列出没下载的模型"是两回事。
+    private func mfluxModelChoiceItems() -> [NSMenuItem] {
+        let models = mfluxibleInstalledModels()
+        var items = choiceItems(current: cfg.mfluxible.model,
+                                options: models.map { ($0, $0) },
+                                customLabel: "Custom model key…", tag: kTagMfluxModel)
+        if models.isEmpty {
+            items.insert(disabled("(no downloaded models)"), at: 0)
+        }
+        return items
+    }
+
+    /// LoRA 这类 free-text 字段的子菜单：显示当前值 + 一个设置入口 + 一个清空入口。
+    /// 没有封闭枚举可选（路径/系数是自由文本），所以不用 choiceItems。
+    private func loraItems(current: String, tag: Int, customLabel: String) -> [NSMenuItem] {
+        var items: [NSMenuItem] = [disabled(current.isEmpty ? "Current: (none)" : "Current: \(current)"),
+                                   .separator()]
+        let set = NSMenuItem(title: customLabel, action: #selector(pickCustom(_:)), keyEquivalent: "")
+        set.target = self; set.tag = tag
+        items.append(set)
+        let clear = NSMenuItem(title: "Clear", action: #selector(pickValue(_:)), keyEquivalent: "")
+        clear.target = self; clear.tag = tag; clear.representedObject = ""
+        clear.isEnabled = !current.isEmpty
+        items.append(clear)
+        return items
+    }
+
+    /// 输出目录子菜单：显示当前值 + 选目录 + 恢复默认（清空 = 引擎默认 ~/Pictures/mfluxible）。
+    private func outputDirItems() -> [NSMenuItem] {
+        let cur = cfg.mfluxible.outputDir
+        var items: [NSMenuItem] = [disabled(cur.isEmpty ? "Default: ~/Pictures/mfluxible" : cur),
+                                   .separator()]
+        let pick = NSMenuItem(title: "Choose folder…", action: #selector(pickMfluxOutputDir), keyEquivalent: "")
+        pick.target = self
+        items.append(pick)
+        let def = NSMenuItem(title: "Use engine default", action: #selector(pickValue(_:)), keyEquivalent: "")
+        def.target = self; def.tag = kTagMfluxOutputDir; def.representedObject = ""
+        def.isEnabled = !cur.isEmpty
+        items.append(def)
+        return items
+    }
+
+    @objc func pickMfluxOutputDir() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use this folder"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        cfg.mfluxible.outputDir = url.path
+        cfg.save(); applyConfig(cfg); askRestart("Output dir set: \(url.path)")
+    }
+
     /// 手动指定模型目录 —— 兜住"每台电脑路径不一致"和 `--model-dir` 指到别处的情况。
     private func modelDirItems() -> [NSMenuItem] {
         let cur = activeEngine == .mlx ? cfg.mlx.modelDir : cfg.modelDirSplash
@@ -3390,12 +4089,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // 刷新频率提到 1 秒后，每秒起一个进程就太浪费了 —— 模型库很少变，缓存 60 秒。
         // 换引擎 / 换模型 / 换模型目录时会主动失效（见 invalidateModelList）。
         if let c = modelListCache, Date().timeIntervalSince(c.at) < 60 { return c.list }
-        let list = (activeEngine == .mlx) ? mlxInstalledModels() : splashInstalledModels()
+        let list: [String]
+        switch activeEngine {
+        case .mlx:    list = mlxInstalledModels()
+        case .splash: list = splashInstalledModels()
+        // 图像引擎与两个 LLM 引擎同一原则：只列本机已下载的。
+        // 探测在后台 tick 里做（要 spawn python），这里只读缓存，绝不阻塞主线程。
+        case .mfluxible: list = mfluxibleInstalledModels()
+        }
         modelListCache = (Date(), list)
         return list
     }
 
-    private func invalidateModelList() { modelListCache = nil }
+    private func invalidateModelList() {
+        modelListCache = nil
+        MfluxibleModels.invalidate()
+    }
+
+    /// mfluxible 的本机已下载模型 key 清单。
+    ///
+    /// 扫 HF 缓存的完整快照、再用引擎自带的 MODELS 表把 repo 反查成 key
+    /// （实现见 MfluxibleModels / kMfluxibleProbeScript）。venv 缺失或探测失败时
+    /// 返回空列表 —— 由 modelItems 显示 "(no downloaded models)"，绝不退回幻影清单。
+    /// 未下载的模型只能用 Custom model key… 手填（显式动作，会触发下载）。
+    fileprivate func mfluxibleInstalledModels() -> [String] {
+        // CLI（--models / --dump-menu）是短命进程、没有 tick 循环，缓存永远是空的，
+        // 那里同步探一次（~0.15–0.5s，命令行完全可接受）。
+        // --dump-menu 会把同一份菜单走两遍（autoenablesItems 两种取值），
+        // 所以探完就记进缓存，第二次直接复用，不重复 spawn。
+        // App 运行中只读缓存：主线程绝不能等一个 python 进程。
+        if cliMode {
+            if MfluxibleModels.isResolved { return MfluxibleModels.current }
+            let list = MfluxibleModels.probeSync()
+            MfluxibleModels.storeForCLI(list)
+            return list
+        }
+        return MfluxibleModels.current
+    }
 
     /// mlx-serve 自带 `list` 子命令，输出是 `NAME  TYPE  SIZE` 表格。
     /// 命令失败（引擎没装 / 被换过）时退回扫 <models>/<org>/<repo>。
@@ -3619,9 +4349,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc func pickCustomModel() {
-        let msg = activeEngine == .mlx
-            ? "Model directory path, or org/repo from the model library"
-            : "Hugging Face repository, in owner/repo form"
+        let msg: String
+        switch activeEngine {
+        case .mlx:       msg = "Model directory path, or org/repo from the model library"
+        case .splash:    msg = "Hugging Face repository, in owner/repo form"
+        case .mfluxible: msg = "Built-in model key (e.g. qwen-image-2.1); downloaded on first start"
+        }
         guard let v = askString(title: "Custom model", message: msg,
                                 defaultValue: currentModel), !v.isEmpty else { return }
         setCurrentModel(v); askRestart("Model switched to \(v)")
@@ -3690,6 +4423,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case kTagMlxLanDiscover:     cfg.mlx.lanDiscover = (v == "on")
         // ── mlx-serve 26.11.x 新增外露项："Load plugins" 对应 on → noPlugins=false
         case kTagMlxNoPlugins:       cfg.mlx.noPlugins = (v == "off")
+        // ── mfluxible（图像引擎，写入 cfg.mfluxible）。改 model/quantize/lora 任一项后
+        // askRestart 会提示重启 —— LoRA/量化是启动时 bake 的，不重启不生效
+        case kTagMfluxModel:      cfg.mfluxible.model = v
+        case kTagMfluxQuantize:   cfg.mfluxible.quantize = v
+        case kTagMfluxLoraPaths:  cfg.mfluxible.loraPaths = v
+        case kTagMfluxLoraScales: cfg.mfluxible.loraScales = v
+        case kTagMfluxPort:       cfg.mfluxible.port = v
+        case kTagMfluxOutputDir:  cfg.mfluxible.outputDir = v
         default: return
         }
         cfg.save()
@@ -3737,6 +4478,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case kTagMlxMaxMtpCtx:       cfg.mlx.maxMtpCtx = v
         case kTagMlxReasoningBudget: cfg.mlx.reasoningBudget = v
         case kTagMlxLanShare:        cfg.mlx.lanShare = v
+        // ── mfluxible（图像引擎）的 free-text 入口
+        case kTagMfluxModel:      cfg.mfluxible.model = v
+        case kTagMfluxLoraPaths:  cfg.mfluxible.loraPaths = v
+        case kTagMfluxLoraScales: cfg.mfluxible.loraScales = v
+        case kTagMfluxPort:
+            // 与 Splash 端口同一校验纪律：非法值会让服务起不来、lsof 探测失效
+            guard let n = Int(v.trimmingCharacters(in: .whitespaces)), n >= 1, n <= 65535 else {
+                alert(title: "Invalid port", message: "Expected an integer between 1 and 65535, got \"\(v)\"")
+                return
+            }
+            cfg.mfluxible.port = String(n)
         default: return
         }
         cfg.save()
@@ -3784,6 +4536,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case kTagMlxMaxMtpCtx:   return ("Custom MTP context ceiling", "tokens, e.g. 65536; 0 = no ceiling", cfg.mlx.maxMtpCtx)
         case kTagMlxReasoningBudget: return ("Custom reasoning budget", "max thinking tokens per request, e.g. 8192", cfg.mlx.reasoningBudget)
         case kTagMlxLanShare:    return ("Custom LAN share list", "all, or model ids separated by commas", cfg.mlx.lanShare)
+        // ── mfluxible（图像引擎）
+        case kTagMfluxModel:      return ("Custom model key", "built-in key, e.g. qwen-image-2.1 / flux-dev", cfg.mfluxible.model)
+        case kTagMfluxLoraPaths:  return ("LoRA paths", "local .safetensors files, comma-separated", cfg.mfluxible.loraPaths)
+        case kTagMfluxLoraScales: return ("LoRA scales", "one per path, comma-separated, e.g. 0.8,1.0", cfg.mfluxible.loraScales)
+        case kTagMfluxPort:       return ("Custom port", "1-65535, e.g. 8421", cfg.mfluxible.port)
         default:                 return ("Custom context length", "e.g. 100K / 32768", cfg.maxContext)
         }
     }
@@ -3840,13 +4597,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc func openLogs() {
+        // 按引擎分发：mfluxible 的日志在 ~/.mfluxible/logs/mfluxible-<port>.log
+        let path = engineLogErrPath
         try? FileManager.default.createDirectory(
-            at: URL(fileURLWithPath: logErrPath).deletingLastPathComponent(),
+            at: URL(fileURLWithPath: path).deletingLastPathComponent(),
             withIntermediateDirectories: true)
-        if !FileManager.default.fileExists(atPath: logErrPath) {
-            FileManager.default.createFile(atPath: logErrPath, contents: nil)
+        if !FileManager.default.fileExists(atPath: path) {
+            FileManager.default.createFile(atPath: path, contents: nil)
         }
-        NSWorkspace.shared.open(URL(fileURLWithPath: logErrPath))
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
     @objc func openModelDir()  { NSWorkspace.shared.open(engineModelsDir) }
@@ -3900,7 +4659,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         Args: \((activeEngine == .mlx ? cfg.mlx.serveArguments : cfg.serveArguments).joined(separator: " "))
         Process: \(Service.recordedPID.map(String.init) ?? "none")
         Config: \(configURL.path)
-        Log: \(logErrPath)
+        Log: \(engineLogErrPath)
         Login item: \(SMAppService.mainApp.status == .enabled ? "registered" : "not registered")
         """
         alert.addButton(withTitle: "OK")
@@ -3923,7 +4682,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if a == #selector(stopService)    { return p.canStop }
         if a == #selector(restartService) { return p.canRestart }
         if a == #selector(takeOver)       { return p.canTakeOver }
-        if a == #selector(openWebUI)      { return p.canOpenUI && !cfg.noWebUI }
+        if a == #selector(openWebUI)      { return p.canOpenUI && (activeEngine == .mfluxible || !cfg.noWebUI) }
         if a == #selector(clearAPIKey)    { return !cfg.apiKey.isEmpty }
         // 引擎不认识的参数：哪怕 autoenablesItems 被谁打开了，也不允许点。
         // 走和 rebuildMenu 同一张 tag→flag 表，保证两处判定范围永远一致
@@ -3983,9 +4742,15 @@ private func pad(_ s: String, _ width: Int) -> String {
     return s + String(repeating: " ", count: max(0, width - w))
 }
 
+/// 是否处于一次性 CLI 模式（--models / --dump-menu 等）。
+/// CLI 进程没有 tick 循环，后台缓存永远是空的，所以模型清单探测必须同步做一次；
+/// App 运行中则相反 —— 主线程只读缓存，探测交给后台（见 MfluxibleModels）。
+private var cliMode = false
+
 func runCLI(_ argv: [String]) -> Bool {
     guard argv.count >= 2 else { return false }
     let cmd = argv[1]
+    cliMode = true
     switch cmd {
     case "--start", "--stop", "--restart", "--status", "--states", "--takeover",
          "--pause", "--resume", "--login-on", "--login-off", "--dump-menu", "--version-of",
@@ -4025,7 +4790,13 @@ func runCLI(_ argv: [String]) -> Bool {
         print("engine:    running \(Service.runningVersion() ?? "—") · installed \(Service.installedVersion() ?? "—")")
         // 按引擎取模型名 —— 原来固定打印 cfg.model（Splash 的字段），
         // 导致跑着 MLX 时 status 里显示的却是 Splash 的模型
-        print("model:     \(activeEngine == .mlx ? cfg.mlx.model : cfg.model)")
+        let statusModel: String
+        switch activeEngine {
+        case .splash:    statusModel = cfg.model
+        case .mlx:       statusModel = cfg.mlx.model
+        case .mfluxible: statusModel = cfg.mfluxible.model
+        }
+        print("model:     \(statusModel)")
         print("args:      \(cfg.serveArguments.joined(separator: " "))")
         let state = Service.paused ? "paused"
                   : (s.up ? (Service.managed ? "running (managed)" : "running (external)") : "stopped")
@@ -4033,7 +4804,15 @@ func runCLI(_ argv: [String]) -> Bool {
         print("managed:   \(Service.managed ? "pid \(Service.recordedPID!)" : "none")")
         print("http:      \(s.up ? "ok" : "no response")")
         if s.up {
-            if activeEngine == .mlx {
+            if activeEngine == .mfluxible {
+                // 图像引擎：没有 tok/s，报模型就绪状态与内存
+                if s.imageModelLoaded {
+                    print(String(format: "image:     %@ %@ · memory %.1f GB",
+                                 s.imageModelName, s.imageQuantize, s.residentGB))
+                } else {
+                    print("image:     loading model… (downloading / quantizing)")
+                }
+            } else if activeEngine == .mlx {
                 if s.metricsAvailable {
                     // 注意：CLI 每次都是新进程，没有上一次采样做基线，
                     // 所以速率这里永远是 idle —— 要看真实速率得用菜单栏（它有常驻状态）。
@@ -4160,7 +4939,20 @@ func runCLI(_ argv: [String]) -> Bool {
         let app = AppDelegate()
         app.cfg = Config.load()
         print("menu lists:")
-        if activeEngine == .mlx {
+        if activeEngine == .mfluxible {
+            // 图像引擎与两个 LLM 引擎同一原则：只列本机已下载的。
+            // 扫 HF 缓存的完整快照（缺组件 / .incomplete / 分片缺失 / 非 pinned commit 都不算），
+            // 再用引擎自带的 MODELS 表把 repo 反查成 MFLUXIBLE_MODEL 的 key。
+            print("  (source: 扫 HF 缓存完整快照 → 引擎 MODELS 表反查 key)")
+            let list = app.installedModels()
+            let configured = app.cfg.mfluxible.model
+            for m in list {
+                print("  [\(m == configured ? "cfg " : "list")] \(m)")
+            }
+            if !list.contains(configured), !configured.isEmpty {
+                print("  [cfg ] \(configured)  (custom/未下载)")
+            }
+        } else if activeEngine == .mlx {
             // MLX 的清单来自 `mlx-serve list`，拿 Splash 的 App/HF 目录去比对毫无意义
             // （那样每一条都会被标成 cfg）。这里改成区分"库里的"和"配置里手填的"。
             print("  (source: `mlx-serve list`，失败时退回扫模型目录)")
@@ -4175,6 +4967,11 @@ func runCLI(_ argv: [String]) -> Bool {
             }
         }
     case "--rate":
+        // 图像引擎没有 tok/s 语义，速率调试不适用（也不该向它发 chat 请求）
+        if activeEngine == .mfluxible {
+            print("--rate 不适用于图像引擎（mfluxible）：无 tok/s 指标，状态请看 --status 的 image 行")
+            return true
+        }
         // 调试验证用：在**单个进程**里跑真实的 status() 轮询，并同时发一次生成，
         // 打印每次算出的 tps。菜单栏的速率逻辑必须跨调用才有基线，
         // 单次 --status 永远测不出来（那是新进程、没有 lastMLXSample）。
@@ -4206,9 +5003,16 @@ func runCLI(_ argv: [String]) -> Bool {
         print("flags:   \(known.isEmpty ? "(none)" : known.joined(separator: " "))")
         // 逐项列出受门控的参数 —— 范围与顺序都取自 kGatedParams，
         // 也就是菜单置灰 / serveArguments 过滤的同一张表
-        // 用当前引擎自己的那张门控表，否则 MLX 下会去查一堆 Splash 专属 flag
-        for p in (activeEngine == .mlx ? kMlxGatedParams : kGatedParams) {
-            print("  \(Service.flagAvailable(p.flag) ? "✅" : "❌") \(p.flag)")
+        // 用当前引擎自己的那张门控表，否则 MLX 下会去查一堆 Splash 专属 flag。
+        // mfluxible 没有 serve-flag 语义（配置全走 env），LLM 门控表对它不适用 ——
+        // 跳过逐项诊断，只说明配置方式，避免把一堆 ❌ 误报成"引擎不支持"
+        if activeEngine == .mfluxible {
+            print("gating:  (不适用 —— mfluxible 配置全走环境变量，无 serve flag 门控)")
+            print("  env: MFLUXIBLE_MODEL / MFLUXIBLE_QUANTIZE / MFLUXIBLE_LORA_PATHS / MFLUXIBLE_LORA_SCALES / MFLUXIBLE_OUTPUT_DIR")
+        } else {
+            for p in (activeEngine == .mlx ? kMlxGatedParams : kGatedParams) {
+                print("  \(Service.flagAvailable(p.flag) ? "✅" : "❌") \(p.flag)")
+            }
         }
         // 模型包自带部件（第二道门）：和菜单置灰同一套探测
         if activeEngine == .mlx {
