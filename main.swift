@@ -2908,13 +2908,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     private func modelItems() -> [NSMenuItem] {
-        var items = installedModels().map { m -> NSMenuItem in
+        let models = installedModels()
+        var items = models.map { m -> NSMenuItem in
             let it = NSMenuItem(title: m, action: #selector(pickModel(_:)), keyEquivalent: "")
             it.target = self
             it.representedObject = m
             it.state = (m == currentModel) ? .on : .off
             return it
         }
+        // 本机一个模型都没下载时给一条禁用信息行（disabled() 自带 kInfoTag，与文件里
+        // 其他信息行同款），让用户知道是"库是空的"而不是菜单坏了；Custom 手填入口照旧。
+        // 配置模型未下载时这里没有勾选项 —— 预期行为，状态栏 KPI 行仍显示配置模型名。
+        if models.isEmpty { items.append(disabled("(no downloaded models)")) }
         items.append(.separator())
         let label = activeEngine == .mlx ? "Custom model (org/repo or path)…" : "Custom owner/repo…"
         let custom = NSMenuItem(title: label, action: #selector(pickCustomModel), keyEquivalent: "")
@@ -3424,10 +3429,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
         }
 
-        var list = out.sorted()
-        // 当前配置里的模型即使扫不到也要留着，否则菜单会把它"弄丢"
-        if !cfg.mlx.model.isEmpty, !list.contains(cfg.mlx.model) { list.append(cfg.mlx.model) }
-        return list
+        // 只列本机真实已下载的模型：配置模型不再强插 ——
+        // 没下载就不该出现在菜单里（无勾选是预期行为，状态栏 KPI 行仍显示配置名）。
+        return out.sorted()
     }
 
     private func splashInstalledModels() -> [String] {
@@ -3459,11 +3463,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             }
         }
 
-        var list = out.sorted()
-        // 兜底清单同步迁移：1.3.1 起 incoai/*-Splash 包彻底不加载，改官方指定的等权重替代
-        if list.isEmpty { list = ["mlx-community/Qwen3.8-27B-4bit", "mlx-community/Qwen3.6-35B-A3B-4bit"] }
-        if !list.contains(cfg.model) { list.append(cfg.model) }
-        return list
+        // 过滤死包：Splash 1.3.1 起 incoai/*-Splash 彻底不加载（官方 breaking change，
+        // Config 解码层已把老配置迁移到 mlx-community 替代）。包还在盘上，但列出来会
+        // 误导用户选中、随后静默迁移到未下载的替代并触发下载 —— 索性不显示。
+        // ID 均为 owner/name（目录名不含 "/"），前缀+后缀判定等价于 owner==incoai 且 name 以 -Splash 结尾。
+        out = out.filter { !($0.hasPrefix("incoai/") && $0.hasSuffix("-Splash")) }
+        // 只列本机真实已下载的模型：不设兜底清单、不强插 cfg.model ——
+        // 空就返回空，由 modelItems 展示 "(no downloaded models)" 信息行。
+        return out.sorted()
     }
 
     // MARK: 动作
