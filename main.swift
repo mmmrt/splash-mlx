@@ -1179,6 +1179,59 @@ private var hfHubDir: URL {
     return homeURL().appendingPathComponent(".cache/huggingface/hub")
 }
 
+// ==== MODEL-KIND-BEGIN ====
+/// 目录是否为**图像扩散管线包**（diffusers 布局）。
+///
+/// 判定依据（真机包实测）：图像包根目录必有 model_index.json，JSON 含 `_class_name`
+/// （如 "QwenImage21Pipeline"）及 transformer/vae/scheduler 等组件键；LLM chat 包只有
+/// config.json（model_type / architectures），不会有 model_index.json。
+/// LLM 侧三处扫描（mlx list 兜底 / splash 托管目录 / HF 缓存）共用这一份真相，
+/// 防止图像权重（如 Qwen/Qwen-Image-2.1）泄漏进 chat 模型菜单。
+/// mfluxible 图像引擎自己的探测**不走这里**——它列图像包是正确行为。
+///
+/// fail-open 纪律（与 modelCaps 一致）：读不到 / 解析失败 / 无 `_class_name` → false，
+/// 只有「看到管线证据」才正向排除，绝不把正常 chat 模型误杀。
+private func isDiffusionPipelinePackage(at dir: URL) -> Bool {
+    let indexURL = dir.appendingPathComponent("model_index.json")
+    guard let data = try? Data(contentsOf: indexURL),
+          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let cls = root["_class_name"] as? String, !cls.isEmpty else { return false }
+    return true
+}
+
+/// HF 缓存条目目录（models--<owner>--<name>）是否为图像扩散包。
+/// HF 缓存的真实文件在 snapshots/<rev>/ 下（blobs 只是内容寻址存储），
+/// 必须进到快照目录才能用 isDiffusionPipelinePackage 判定。
+/// 任一快照命中即判图像包；快照读不到（未下载完 / 只有 blobs）→ false，
+/// 保持既有「有条目就列出」的 fail-open 行为，不误杀。
+private func isDiffusionHFCacheEntry(_ entryDir: URL) -> Bool {
+    let fm = FileManager.default
+    let snapsDir = entryDir.appendingPathComponent("snapshots")
+    guard let revs = try? fm.contentsOfDirectory(atPath: snapsDir.path) else { return false }
+    for rev in revs where !rev.hasPrefix(".") {
+        let snap = snapsDir.appendingPathComponent(rev)
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: snap.path, isDirectory: &isDir), isDir.boolValue else { continue }
+        if isDiffusionPipelinePackage(at: snap) { return true }
+    }
+    return false
+}
+
+/// 目录是否「看起来是模型包」：根有 config.json / model_index.json，或任一 *.safetensors。
+/// 供目录扫描兜底（mlx-serve list 失败时）排除**非模型目录**——用户可能把无关目录
+/// 放进模型库（如 WorkBuddy/files），旧逻辑只因它在 <models>/<owner>/ 下就当成幻影
+/// 模型混进菜单。注意这是「正向证据」判定而非完整性判定：incoai 死包（manifest.json
+/// 布局）三种 marker 都没有，同样不收——它本来就无法被 LLM 引擎加载。
+private func looksLikeModelPackage(at dir: URL) -> Bool {
+    let fm = FileManager.default
+    if fm.fileExists(atPath: dir.appendingPathComponent("config.json").path) { return true }
+    if fm.fileExists(atPath: dir.appendingPathComponent("model_index.json").path) { return true }
+    if let entries = try? fm.contentsOfDirectory(atPath: dir.path),
+       entries.contains(where: { $0.hasSuffix(".safetensors") }) { return true }
+    return false
+}
+// ==== MODEL-KIND-END ====
+
 // ==== MFLUXIBLE-MODELS-BEGIN ====
 /// mfluxible 的「本机已下载模型」探测。**与两个 LLM 引擎同一原则：只列本机真有的，
 /// 绝不列引擎支持的幻影清单。**
@@ -4129,6 +4182,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     /// mlx-serve 自带 `list` 子命令，输出是 `NAME  TYPE  SIZE` 表格。
     /// 命令失败（引擎没装 / 被换过）时退回扫 <models>/<org>/<repo>。
+    /// **chat 菜单只列文本生成模型**：TYPE 白名单只保留 chat/completion，
+    /// image/embedding/vision/audio 等一律排除——图像权重同样躺在模型库里，
+    /// 不过滤就会泄漏进 LLM 菜单（与 HF 缓存扫描泄漏同一根因）。
     private func mlxInstalledModels() -> [String] {
         let fm = FileManager.default
         var out = Set<String>()
@@ -4139,10 +4195,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 let s = line.trimmingCharacters(in: .whitespaces)
                 // 跳过表头、空行，以及引擎启动时那行 [mem] 调试输出
                 if s.isEmpty || s.hasPrefix("NAME") || s.hasPrefix("[") { continue }
+                let cols = s.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
                 // 首列就是 org/repo
-                guard let first = s.split(whereSeparator: { $0 == " " || $0 == "\t" }).first else { continue }
-                let name = String(first)
-                if name.contains("/") { out.insert(name) }
+                guard let name = cols.first, name.contains("/") else { continue }
+                // 第 2 列 TYPE（26.11.3 实测取值：chat/completion/image/embedding/vision/audio/text）。
+                // 只认「纯字母（可含连字符）」的 token 为 TYPE：第 2 列若是数字（如老版输出
+                // 只有 NAME SIZE 时的 "30.8"），按 TYPE 缺失走下面的 marker 兜底，
+                // 避免把尺寸误读成类型而误杀 chat 模型。
+                if cols.count >= 2, !cols[1].isEmpty,
+                   cols[1].allSatisfy({ $0.isLetter || $0 == "-" }) {
+                    // 白名单：chat 菜单只保留 chat/completion；其余已知类型（image/embedding/
+                    // vision/audio/text）与未来新增类型都排除——宁缺毋滥，非文本生成模型不进 chat 菜单。
+                    let type = cols[1].lowercased()
+                    if type == "chat" || type == "completion" { out.insert(name) }
+                    continue
+                }
+                // TYPE 缺失 / 无法解析的兜底：按盘上包 marker 判定，只有正向读到扩散管线
+                // （model_index.json 含 _class_name）才排除，否则保留。选「marker 判定」而非
+                // 「保守排除」，是因为老版 list 只输出 NAME 一列，保守排除会把整个 chat 菜单
+                // 清空（误杀正常 chat 模型）；marker 判定对老输出保持既有行为、只拦图像包。
+                if !isDiffusionPipelinePackage(at: mlxModelsDir.appendingPathComponent(name)) {
+                    out.insert(name)
+                }
             }
         }
 
@@ -4153,7 +4227,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                     var isDir: ObjCBool = false
                     guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { continue }
                     if let names = try? fm.contentsOfDirectory(atPath: dir.path) {
-                        for name in names where !name.hasPrefix(".") { out.insert("\(owner)/\(name)") }
+                        for name in names where !name.hasPrefix(".") {
+                            let pkg = dir.appendingPathComponent(name)
+                            var pkgIsDir: ObjCBool = false
+                            guard fm.fileExists(atPath: pkg.path, isDirectory: &pkgIsDir), pkgIsDir.boolValue else { continue }
+                            // 只收「看起来是模型包」的目录（config.json / model_index.json /
+                            // *.safetensors）：模型库里混放的非模型目录（如 WorkBuddy/files）
+                            // 旧逻辑会当成幻影模型列进菜单，这里一并排除（同一根因的扫描无判定问题）。
+                            guard looksLikeModelPackage(at: pkg) else { continue }
+                            // 图像扩散包不进 LLM chat 菜单（与 list 分支共用同一判定，单一真相）。
+                            if isDiffusionPipelinePackage(at: pkg) { continue }
+                            out.insert("\(owner)/\(name)")
+                        }
                     }
                 }
             }
@@ -4176,7 +4261,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 var isDir: ObjCBool = false
                 guard fm.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { continue }
                 if let names = try? fm.contentsOfDirectory(atPath: dir.path) {
-                    for name in names where !name.hasPrefix(".") { out.insert("\(owner)/\(name)") }
+                    for name in names where !name.hasPrefix(".") {
+                        // 图像扩散包（model_index.json 含 _class_name）不进 LLM chat 菜单——
+                        // 图像权重也可能落进托管目录，与下面 HF 缓存泄漏同一根因、同一判定。
+                        if isDiffusionPipelinePackage(at: dir.appendingPathComponent(name)) { continue }
+                        out.insert("\(owner)/\(name)")
+                    }
                 }
             }
         }
@@ -4189,7 +4279,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 guard let sep = body.range(of: "--") else { continue }
                 let owner = String(body[body.startIndex..<sep.lowerBound])
                 let name  = String(body[sep.upperBound...])
-                if !owner.isEmpty && !name.isEmpty { out.insert("\(owner)/\(name)") }
+                if owner.isEmpty || name.isEmpty { continue }
+                // 真实文件在 snapshots/<rev>/ 下，进快照判包类型：图像扩散包排除。
+                // 快照读不到 → 保留（fail-open，维持既有「有条目就列出」行为，不误杀）。
+                if isDiffusionHFCacheEntry(hfHubDir.appendingPathComponent(e)) { continue }
+                out.insert("\(owner)/\(name)")
             }
         }
 
@@ -4919,6 +5013,8 @@ func runCLI(_ argv: [String]) -> Bool {
                 var isDir: ObjCBool = false
                 guard fm.fileExists(atPath: d.path, isDirectory: &isDir), isDir.boolValue else { continue }
                 for n in (try? fm.contentsOfDirectory(atPath: d.path)) ?? [] where !n.hasPrefix(".") {
+                    // 与菜单扫描同一判定：图像扩散包不进 LLM 清单，保持诊断与菜单一致
+                    if isDiffusionPipelinePackage(at: d.appendingPathComponent(n)) { continue }
                     hosted.insert("\(o)/\(n)")
                 }
             }
@@ -4929,7 +5025,10 @@ func runCLI(_ argv: [String]) -> Bool {
                 guard let sep = body.range(of: "--") else { continue }
                 let o = String(body[body.startIndex..<sep.lowerBound])
                 let n = String(body[sep.upperBound...])
-                if !o.isEmpty && !n.isEmpty { hf.insert("\(o)/\(n)") }
+                if o.isEmpty || n.isEmpty { continue }
+                // 与菜单扫描同一判定：进快照判包类型，图像扩散包不标记进 hf 集合
+                if isDiffusionHFCacheEntry(hfHubDir.appendingPathComponent(e)) { continue }
+                hf.insert("\(o)/\(n)")
             }
         }
         print("hf cache: \(hfHubDir.path)")
